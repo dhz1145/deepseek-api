@@ -26,9 +26,10 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-record UpdateRelease(String version, URL url, long size, String digest) {
+record UpdateRelease(String version, URL url, URL assetApi, long size, String digest) {
     private static final String REPOSITORY = "dhz1145/deepseek-api";
-    private static final String LATEST = "https://api.github.com/repos/" + REPOSITORY + "/releases/latest";
+    private static final String RELEASES_API = "https://api.github.com/repos/" + REPOSITORY + "/releases";
+    private static final String LATEST = RELEASES_API + "/latest";
     private static final String DOWNLOAD = "https://github.com/" + REPOSITORY + "/releases/download/";
     private static final Pattern VERSION = Pattern.compile("(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})");
     private static final long MAX_APK = 256L * 1024 * 1024;
@@ -67,11 +68,13 @@ record UpdateRelease(String version, URL url, long size, String digest) {
             JSONObject asset = assets.getJSONObject(i);
             if (!name.equals(asset.optString("name"))) continue;
             long size = asset.optLong("size");
+            long id = asset.optLong("id");
             String digest = asset.optString("digest");
             if ("uploaded".equals(asset.optString("state")) && size > 0 && size <= MAX_APK
                 && expectedUrl.equalsIgnoreCase(asset.optString("browser_download_url"))
                 && digest.matches("sha256:[0-9a-f]{64}")) {
-                return new UpdateRelease(version, new URL(expectedUrl), size, digest.substring(7));
+                URL assetApi = id > 0 ? new URL(RELEASES_API + "/assets/" + id) : null;
+                return new UpdateRelease(version, new URL(expectedUrl), assetApi, size, digest.substring(7));
             }
         }
         throw new IOException("No verifiable APK for the latest release");
@@ -89,18 +92,39 @@ record UpdateRelease(String version, URL url, long size, String digest) {
     }
 
     void download(File file, IntConsumer progress) throws IOException, InvalidApk {
+        // The GitHub website and API have distinct network paths; both serve the same verified asset.
+        if (assetApi != null) {
+            try {
+                downloadFrom(assetApi, file, progress);
+                return;
+            } catch (IOException failed) {
+                if (Thread.currentThread().isInterrupted()) throw failed;
+                progress.accept(0);
+            }
+        }
+        downloadFrom(url, file, progress);
+    }
+
+    private void downloadFrom(URL source, File file, IntConsumer progress) throws IOException, InvalidApk {
         MessageDigest hash;
         try {
             hash = MessageDigest.getInstance("SHA-256");
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException(impossible);
         }
-        URL next = url;
+        URL next = source;
         for (int redirect = 0; redirect < 5; redirect++) {
             HttpsURLConnection connection = connect(next);
             try {
+                connection.setRequestProperty("Accept", "application/octet-stream");
                 int status = connection.getResponseCode();
                 if (status == 200) {
+                    String contentType = connection.getContentType();
+                    if (contentType != null && (contentType.startsWith("application/json")
+                        || contentType.startsWith("application/vnd.github+json")
+                        || contentType.startsWith("text/"))) {
+                        throw new IOException("Expected a binary release asset");
+                    }
                     copyApk(connection, file, hash, progress);
                     return;
                 }
