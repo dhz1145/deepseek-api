@@ -1,4 +1,4 @@
-import { ApiError, API_ORIGIN, request } from './client.js'
+import { ApiError, API_ORIGIN, apiRedirect, getCustomApiBase, request } from './client.js'
 
 /**
  * 语音接口：
@@ -21,8 +21,10 @@ export const transcribe = async (
 ): Promise<string> => {
   const form = new FormData()
   form.append('file', audio, 'recording.wav')
-  const response = await request(`${TOOLS_BASE_URL}/asr`, {
+  const customBase = getCustomApiBase(apiKey)
+  const response = await request(`${customBase ? `${customBase}/tools` : TOOLS_BASE_URL}/asr`, {
     method: 'POST',
+    redirect: apiRedirect(customBase),
     headers: { Authorization: `Bearer ${apiKey}` },
     body: form,
     signal,
@@ -52,8 +54,10 @@ export const synthesize = async (
   voice: TtsVoice,
   signal: AbortSignal
 ): Promise<ReadableStream<Uint8Array>> => {
-  const response = await request(`${TOOLS_BASE_URL}/tts`, {
+  const customBase = getCustomApiBase(apiKey)
+  const response = await request(`${customBase ? `${customBase}/tools` : TOOLS_BASE_URL}/tts`, {
     method: 'POST',
+    redirect: apiRedirect(customBase),
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, voice_id: voice, format: 'pcm', filter_markdown: true }),
     signal,

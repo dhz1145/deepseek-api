@@ -13,7 +13,7 @@ import java.io.FileNotFoundException;
 
 public final class UpdateApkProvider extends ContentProvider {
     static final String MIME_TYPE = "application/vnd.android.package-archive";
-    private static final String NAME = "deepseek-app-replica-update.apk";
+    private static final String NAME = "deepseek-api-update.apk";
 
     static File apk(Context context) {
         return new File(new File(context.getCacheDir(), "app-update"), NAME);

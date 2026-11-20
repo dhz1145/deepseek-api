@@ -40,6 +40,7 @@ import {
 import { showToast } from '../base/toastState.js'
 import { closeMobileSider } from '../sider/mobileSiderState.js'
 import { ApiKeyConfirm, ApiKeyField, useApiKeyEditor } from './ApiKeyField.js'
+import { ChatModelField } from './ChatModelField.js'
 import { createSettingsPageMotion } from './androidSettingsMotion.js'
 import { closeSettings, useSettingsDialog } from './settingsDialogState.js'
 import styles from './AndroidSettings.module.css'
@@ -50,7 +51,7 @@ const appVersion = document.querySelector<HTMLMetaElement>(
 const policiesUrl = 'https://cdn.deepseek.com/policies'
 const chinesePoliciesUrl = `${policiesUrl}/zh-CN`
 const faqUrl = 'https://static.deepseek.com/faq/index.html'
-const releasesUrl = 'https://github.com/LiJiaHua1024/deepseek-app-replica/releases/latest'
+const releasesUrl = 'https://github.com/dhz1145/deepseek-api/releases/latest'
 
 const updateMessages = {
   current: 'updateCurrent',
@@ -360,6 +361,9 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
       setFile(null)
       return
     }
+    if (page === 'account' && editor.editing) {
+      editor.close()
+    }
     const finish = () => {
       const previous = parentPage[page]
       if (previous) {
@@ -631,7 +635,7 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
               label="DeepSeek API Key"
               icon={<Profile />}
               value="••••••••"
-              onClick={() => editor.setEditing(true)}
+              onClick={editor.open}
             />
             {editor.editing ? (
               <div className={styles.credentials}>
@@ -639,6 +643,9 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
                 <ApiKeyConfirm editor={editor} />
               </div>
             ) : null}
+            <div className={styles.credentials}>
+              <ChatModelField />
+            </div>
             <Row
               label={tr('开放平台', 'Open platform')}
               href="https://platform.deepseek.com/api_keys"

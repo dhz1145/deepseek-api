@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-const [serial, appId = 'io.github.lijiahua1024.dsreplica'] = process.argv.slice(2)
+const [serial, appId = 'io.github.dhz1145.dsapi'] = process.argv.slice(2)
 assert.match(serial ?? '', /^emulator-\d+$/, 'Pass the serial of a test emulator')
 assert.match(appId, /^[\w.]+$/)
 
@@ -170,6 +170,16 @@ try {
   console.log(
     `Android API ${adb('shell', 'getprop', 'ro.build.version.sdk')} · ${await evaluate('navigator.userAgent')}`
   )
+  assert.equal(
+    await evaluate(`(() => {
+      const key = document.querySelector(${JSON.stringify(password)});
+      const address = key.previousElementSibling;
+      return !!address && address.matches('input[inputmode="url"]') && address.value === ''
+        && getComputedStyle(address).borderRadius === getComputedStyle(key).borderRadius;
+    })()`),
+    true,
+    'The optional address field should appear above the key with the same input style'
+  )
   const origin = webViewOrigin()
   const tap = ({ x, y }) => adb('shell', 'input', 'tap', String(x + origin.x), String(y + origin.y))
   await evaluate(`(() => {
@@ -183,15 +193,42 @@ try {
       { type: 'message_stop' }
     ];
     const sse = (event) => new TextEncoder().encode('event: ' + event.type + '\\ndata: ' + JSON.stringify(event) + '\\n\\n');
+    const calls = new Map();
+    let next = 0;
+    Object.defineProperty(window, 'DeepSeekNativeApi', { configurable: true, value: {
+      prepare(url, method, headers) {
+        const id = String(++next);
+        calls.set(id, { url: new URL(url), method, headers: JSON.parse(headers), bytes: [] });
+        return id;
+      },
+      append(id, chunk) {
+        const call = calls.get(id);
+        if (!call) return false;
+        call.bytes.push(...Array.from(atob(chunk), (byte) => byte.charCodeAt(0)));
+        return true;
+      },
+      cancel(id) { calls.delete(id); }
+    } });
     window.fetch = (input, init) => {
-      const url = new URL(input, location.href);
-      if (url.origin !== 'https://api.deepseek.com') return fetch(input, init);
+      const local = new URL(input, location.href);
+      if (!local.pathname.startsWith('/_native_api/')) {
+        if (local.origin === location.origin) return fetch(input, init);
+        return Promise.reject(new Error('Unexpected cross-origin WebView request'));
+      }
+      const call = calls.get(local.pathname.split('/').pop());
+      if (!call || local.origin !== location.origin || call.url.origin !== 'https://api.deepseek.com') {
+        return Promise.reject(new Error('Unexpected native API request'));
+      }
+      const { url, headers } = call;
       if (url.pathname === '/models') {
-        const valid = new Headers(init.headers).get('Authorization') === 'Bearer android-compat-test';
-        return Promise.resolve(new Response(valid ? '{"data":[]}' : '{"error":{"message":"Rejected test key"}}',
+        const valid = call.method === 'GET' && new Headers(headers).get('Authorization') === 'Bearer android-compat-test';
+        return Promise.resolve(new Response(valid ? '{"data":[{"id":"deepseek-flash"},{"id":"example-model"}]}' : '{"error":{"message":"Rejected test key"}}',
           { status: valid ? 200 : 401, headers: { 'Content-Type': 'application/json' } }));
       }
-      if (url.pathname === '/anthropic/v1/messages' && new Headers(init.headers).get('x-api-key') === 'android-compat-test') {
+      if (url.pathname === '/anthropic/v1/messages' && call.method === 'POST' && new Headers(headers).get('x-api-key') === 'android-compat-test') {
+        if (JSON.parse(new TextDecoder().decode(new Uint8Array(call.bytes))).model !== 'example-model') {
+          return Promise.reject(new Error('Unexpected model in Messages request'));
+        }
         const stream = new ReadableStream({ start(controller) {
           events.slice(0, 2).forEach(event => controller.enqueue(sse(event)));
           setTimeout(() => {
@@ -228,6 +265,16 @@ try {
 
   await evaluate(setInput(password, 'android-compat-test'))
   await evaluate('document.querySelector("button[type=submit]").click()')
+  await until('The model list should contain the choices returned by the API', () =>
+    evaluate(`Array.from(document.querySelectorAll('select')).some((select) =>
+      Array.from(select.options).map((option) => option.value).join(',') === ',deepseek-flash,example-model')`)
+  )
+  await evaluate(`(() => {
+    const select = Array.from(document.querySelectorAll('select')).find((field) =>
+      Array.from(field.options).some((option) => option.value === 'example-model'));
+    select.value = 'example-model';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`)
   const chat = await until(
     'Saving the key should render a full-height, clickable conversation',
     async () => {

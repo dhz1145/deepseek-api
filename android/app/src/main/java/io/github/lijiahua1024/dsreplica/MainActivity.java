@@ -45,6 +45,7 @@ public final class MainActivity extends Activity {
     private WebView webView;
     private FrameLayout frame;
     private ApiKeyStore keys;
+    private NativeApiTransport apiTransport;
     private ValueCallback<Uri[]> fileCallback;
     private boolean choosingPhotos;
     private boolean keyboardVisible;
@@ -66,6 +67,7 @@ public final class MainActivity extends Activity {
     public void onCreate(Bundle state) {
         super.onCreate(state);
         keys = new ApiKeyStore(this);
+        apiTransport = new NativeApiTransport(getCacheDir());
         recentPhotos = new RecentPhotos(getContentResolver());
         historyExport = new FileExport(getContentResolver());
         imageSave = new ImageSave(getContentResolver());
@@ -107,6 +109,7 @@ public final class MainActivity extends Activity {
         webView.setWebViewClient(new AppPage());
         webView.setWebChromeClient(new DeviceFeatures());
         webView.addJavascriptInterface(new DeviceBridge(), "DeepSeekAndroid");
+        webView.addJavascriptInterface(apiTransport, "DeepSeekNativeApi");
         updater = new AppUpdater(this, status ->
             webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('android-update', {detail: "
                 + status + "}))", null));
@@ -153,6 +156,7 @@ public final class MainActivity extends Activity {
     private final class AppPage extends WebViewClient {
         @Override
         public void onPageStarted(WebView view, String url, Bitmap favicon) {
+            apiTransport.cancelAll();
             backPreviewEnabled = false;
             inAppBack.setEnabled(false);
         }
@@ -178,6 +182,10 @@ public final class MainActivity extends Activity {
             Uri url = request.getUrl();
             if (!isBundled(url)) return null;
             String path = url.getPath();
+            if (path != null && path.startsWith(NativeApiTransport.PATH)
+                    && !request.isForMainFrame() && "GET".equals(request.getMethod())) {
+                return apiTransport.open(path.substring(NativeApiTransport.PATH.length()));
+            }
             if ("/recording.wav".equals(path)) {
                 WebResourceResponse audio = recorder.takeWav();
                 if (audio != null) return audio;
@@ -196,7 +204,7 @@ public final class MainActivity extends Activity {
                 Map<String, String> headers = Map.of("Content-Security-Policy",
                     "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
                     + "img-src 'self' https: data: blob:; font-src 'self' data:; "
-                    + "media-src 'self' blob:; connect-src 'self' https://api.deepseek.com; "
+                    + "media-src 'self' blob:; connect-src 'self'; "
                     + "frame-src 'none'; base-uri 'none'; form-action 'none';");
                 try {
                     return new WebResourceResponse(type == null ? "application/octet-stream" : type,
@@ -410,6 +418,7 @@ public final class MainActivity extends Activity {
     protected void onDestroy() {
         inAppBack.setEnabled(false);
         photoExecutor.shutdownNow();
+        apiTransport.shutdown();
         updater.close();
         if (fileCallback != null) fileCallback.onReceiveValue(null);
         recorder.finish(false);

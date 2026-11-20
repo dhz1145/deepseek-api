@@ -4,7 +4,7 @@
  * 声明联网工具、开启高级审核或启用自动标题时进入扩展模式。
  */
 
-export type ChatModel = 'deepseek-flash' | 'deepseek-v4-pro'
+export type ChatModel = string
 
 // ---------- 响应：内容块 ----------
 

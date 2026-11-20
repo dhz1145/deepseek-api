@@ -27,7 +27,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 record UpdateRelease(String version, URL url, long size, String digest) {
-    private static final String REPOSITORY = "LiJiaHua1024/deepseek-app-replica";
+    private static final String REPOSITORY = "dhz1145/deepseek-api";
     private static final String LATEST = "https://api.github.com/repos/" + REPOSITORY + "/releases/latest";
     private static final String DOWNLOAD = "https://github.com/" + REPOSITORY + "/releases/download/";
     private static final Pattern VERSION = Pattern.compile("(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})");
@@ -60,7 +60,7 @@ record UpdateRelease(String version, URL url, long size, String digest) {
         }
         String version = tag.substring(1);
         if (compareVersions(version, installedVersion) <= 0) return null;
-        String name = "deepseek-app-replica-" + tag + ".apk";
+        String name = "deepseek-api-" + tag + ".apk";
         String expectedUrl = DOWNLOAD + tag + "/" + name;
         JSONArray assets = release.getJSONArray("assets");
         for (int i = 0; i < assets.length(); i++) {
@@ -157,9 +157,10 @@ record UpdateRelease(String version, URL url, long size, String digest) {
         }
         HttpsURLConnection connection = (HttpsURLConnection) url.openConnection();
         connection.setInstanceFollowRedirects(false);
+        connection.setUseCaches(false);
         connection.setConnectTimeout(10_000);
         connection.setReadTimeout(15_000);
-        connection.setRequestProperty("User-Agent", "DeepSeek-App-Replica");
+        connection.setRequestProperty("User-Agent", "DeepSeek-API-Android");
         return connection;
     }
 

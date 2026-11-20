@@ -1,8 +1,11 @@
 import { translate, type TranslationMessage } from '../../i18n/index.js'
+import { useSettings } from '../settings.js'
 import { readMessageEvent } from './parseEvent.js'
 import { readServerSentEvents } from './sse.js'
+import { fetchApi } from './transport.js'
 import type {
   ApiErrorBody,
+  ChatModel,
   CreateMessageRequest,
   FileObject,
   FilePurpose,
@@ -12,7 +15,7 @@ import type {
 /** 构建期 API 地址，默认 https://api.deepseek.com；本地开发支持开发服务器代理 */
 export const API_ORIGIN = __API_ORIGIN__
 /** Anthropic 兼容接口的前缀 */
-const ANTHROPIC_BASE_URL = `${API_ORIGIN}/anthropic/v1`
+export const ANTHROPIC_BASE_URL = `${API_ORIGIN}/anthropic/v1`
 /** 引用 Files API 上传的图片、调用 Anthropic 兼容 Files API 时必须携带 */
 const FILES_BETA = 'files-api-2025-04-14'
 
@@ -69,7 +72,7 @@ const readErrorResponse = async (
 export const request = async (url: string, init: RequestInit): Promise<Response> => {
   let response: Response
   try {
-    response = await fetch(url, init)
+    response = await fetchApi(url, init)
   } catch (error) {
     if (init.signal?.aborted) {
       throw error
@@ -82,20 +85,70 @@ export const request = async (url: string, init: RequestInit): Promise<Response>
   return response
 }
 
-const anthropicHeaders = (apiKey: string, beta: boolean): Record<string, string> => ({
+export const getCustomApiBase = (apiKey: string): string | null => {
+  const current = useSettings.getState()
+  if (!apiKey || apiKey !== current.apiKey) {
+    throw new ApiError('http', { key: 'apiKeyInvalid' }, 401)
+  }
+  return current.apiBaseUrl
+}
+
+export const apiRedirect = (customBase: string | null): RequestRedirect =>
+  customBase ? 'error' : 'follow'
+
+const anthropicHeaders = (
+  apiKey: string,
+  beta: boolean,
+  customBase: string | null
+): Record<string, string> => ({
   // DeepSeek 兼容接口的鉴权方式，也可使用 Authorization: Bearer。
   'x-api-key': apiKey,
+  ...(customBase ? { 'anthropic-version': '2023-06-01' } : {}),
   // Files API 和通过 file_id 引用图片时必传；纯文本聊天无需携带。
   ...(beta ? { 'anthropic-beta': FILES_BETA } : {}),
 })
 
-/** 用 GET /models 校验 API Key（不产生费用） */
-export const verifyApiKey = async (apiKey: string, signal?: AbortSignal): Promise<void> => {
-  await request(`${API_ORIGIN}/models`, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal,
-  })
+/** 获取模型列表，也用同一次请求校验 Key，不发起生成。 */
+export const listChatModels = async (
+  apiKey: string,
+  customBase: string | null,
+  signal?: AbortSignal
+): Promise<ChatModel[]> => {
+  const url = `${customBase ?? API_ORIGIN}/models`
+  const models = new Set<ChatModel>()
+  const cursors = new Set<string>()
+  let cursor = ''
+  for (;;) {
+    const response = await request(cursor ? `${url}?after_id=${encodeURIComponent(cursor)}` : url, {
+      method: 'GET',
+      headers: customBase
+        ? anthropicHeaders(apiKey, false, customBase)
+        : { Authorization: `Bearer ${apiKey}` },
+      redirect: apiRedirect(customBase),
+      signal,
+    })
+    const payload = (await response.json().catch(() => null)) as {
+      data?: ({ id?: unknown } | null)[]
+      has_more?: unknown
+      last_id?: unknown
+    } | null
+    if (!Array.isArray(payload?.data)) {
+      throw new ApiError('protocol', { key: 'apiModelInvalidList' })
+    }
+    for (const entry of payload.data) {
+      if (typeof entry?.id === 'string' && entry.id.trim()) {
+        models.add(entry.id)
+      }
+    }
+    if (!customBase || payload.has_more !== true) {
+      return [...models]
+    }
+    if (typeof payload.last_id !== 'string' || !payload.last_id || cursors.has(payload.last_id)) {
+      throw new ApiError('protocol', { key: 'apiModelInvalidList' })
+    }
+    cursor = payload.last_id
+    cursors.add(cursor)
+  }
 }
 
 /**
@@ -113,9 +166,11 @@ export const uploadFile = async (
     form.append('purpose', purpose)
   }
   form.append('file', file)
-  const response = await request(`${ANTHROPIC_BASE_URL}/files`, {
+  const customBase = getCustomApiBase(apiKey)
+  const response = await request(`${customBase ?? ANTHROPIC_BASE_URL}/files`, {
     method: 'POST',
-    headers: anthropicHeaders(apiKey, true),
+    headers: anthropicHeaders(apiKey, true, customBase),
+    redirect: apiRedirect(customBase),
     body: form,
     signal,
   })
@@ -124,10 +179,13 @@ export const uploadFile = async (
 
 /** DELETE /anthropic/v1/files/{file_id} */
 export const deleteFile = async (apiKey: string, fileId: string): Promise<void> => {
-  await request(`${ANTHROPIC_BASE_URL}/files/${encodeURIComponent(fileId)}`, {
+  const customBase = getCustomApiBase(apiKey)
+  const response = await request(`${customBase ?? ANTHROPIC_BASE_URL}/files/${encodeURIComponent(fileId)}`, {
     method: 'DELETE',
-    headers: anthropicHeaders(apiKey, true),
+    headers: anthropicHeaders(apiKey, true, customBase),
+    redirect: apiRedirect(customBase),
   })
+  await response.body?.cancel()
 }
 
 const hasFile = (body: CreateMessageRequest) =>
@@ -137,11 +195,17 @@ const hasFile = (body: CreateMessageRequest) =>
       message.content.some((block) => block.type === 'image' || block.type === 'document')
   )
 
-const openMessageStream = (apiKey: string, body: CreateMessageRequest, signal: AbortSignal) =>
-  request(`${ANTHROPIC_BASE_URL}/messages`, {
+const openMessageStream = (
+  apiKey: string,
+  customBase: string | null,
+  body: CreateMessageRequest,
+  signal: AbortSignal
+) =>
+  request(`${customBase ?? ANTHROPIC_BASE_URL}/messages`, {
     method: 'POST',
+    redirect: apiRedirect(customBase),
     headers: {
-      ...anthropicHeaders(apiKey, hasFile(body)),
+      ...anthropicHeaders(apiKey, hasFile(body), customBase),
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
     },
@@ -158,22 +222,26 @@ export async function* streamMessage(
   body: CreateMessageRequest,
   signal: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
-  const response = await openMessageStream(apiKey, body, signal).catch((error: unknown) => {
-    if (
-      !(body.tools?.length || body.safety_check || body.title?.enabled) ||
-      !(error instanceof ApiError) ||
-      error.status !== 400 ||
-      !/\buser input too long, \d+ tokens exceeds max 32768 tokens\b/i.test(error.message)
-    ) {
-      throw error
+  const customBase = getCustomApiBase(apiKey)
+  const response = await openMessageStream(apiKey, customBase, body, signal).catch(
+    (error: unknown) => {
+      if (
+        !(body.tools?.length || body.safety_check || body.title?.enabled) ||
+        !(error instanceof ApiError) ||
+        error.status !== 400 ||
+        !/\buser input too long, \d+ tokens exceeds max 32768 tokens\b/i.test(error.message)
+      ) {
+        throw error
+      }
+      // 扩展模式在生成前拒绝长输入时，用基础 Messages API 发送同一上下文。
+      return openMessageStream(
+        apiKey,
+        customBase,
+        { ...body, tools: undefined, safety_check: undefined, title: undefined },
+        signal
+      )
     }
-    // 扩展模式在生成前拒绝长输入时，用基础 Messages API 发送同一上下文。
-    return openMessageStream(
-      apiKey,
-      { ...body, tools: undefined, safety_check: undefined, title: undefined },
-      signal
-    )
-  })
+  )
   const contentType = response.headers.get('Content-Type') ?? ''
   if (!response.body || !contentType.includes('text/event-stream')) {
     throw await readErrorResponse(response, 'protocol', '')

@@ -5,6 +5,7 @@ import { ApiError, uploadFile } from './api/client.js'
 import { classifyApiError, getUploadErrorInfo, isRetryableApiError } from './api/errors.js'
 import type { FilePurpose } from './api/types.js'
 import { prepareImageUpload, type UploadedImage } from './imageUpload.js'
+import { useSettings } from './settings.js'
 import { ACCEPT_FILE_EXTS } from './uploadExts.js'
 
 /** 允许上传的扩展名，按扩展名白名单过滤，清单见 uploadExts.ts */
@@ -210,6 +211,15 @@ const pending = new Map<
   string,
   { promise: Promise<AttachmentUpload>; controller: AbortController }
 >()
+
+// 切换服务时停止旧配置的上传，队列中的文件不能被发送到新地址。
+useSettings.subscribe((current, previous) => {
+  if (current.apiKey !== previous.apiKey || current.apiBaseUrl !== previous.apiBaseUrl) {
+    for (const { controller } of pending.values()) {
+      controller.abort()
+    }
+  }
+})
 
 /** 开始（或复用进行中的）上传；失败时任务记为 error 并抛出原错误。 */
 export const uploadAttachment = (

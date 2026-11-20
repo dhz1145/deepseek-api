@@ -1,0 +1,37 @@
+.field,
+.field label {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  text-align: start;
+}
+
+.field {
+  padding: 4px 0;
+  font-size: 14px;
+}
+
+.field select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  border-radius: 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  padding: 0 12px;
+  color: inherit;
+  background: var(--dsw-alias-bg-layer-2);
+  font: inherit;
+}
+
+.field button {
+  justify-self: start;
+  border: 0;
+  padding: 8px 0;
+  color: var(--dsw-alias-brand-text);
+  background: transparent;
+  font: inherit;
+}
+
+.field button:disabled {
+  opacity: 0.5;
+}

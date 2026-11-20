@@ -99,7 +99,8 @@ export const App = () => {
   const t = useTranslate()
   const isMobile = useIsMobile()
   const apiKey = useSettings((state) => state.apiKey)
-  const needsApiKey = Boolean(android && !apiKey)
+  const model = useSettings((state) => state.chatModel)
+  const needsApiSetup = Boolean(android && (!apiKey || !model))
   const drawerOpen = useMobileSider((state) => state.open)
   const drawerGesture = useAndroidDrawerGesture()
   const locale = useSettings((state) => state.locale)
@@ -109,7 +110,7 @@ export const App = () => {
   const saveErrors = useChatStore((state) => state.sessionSaveErrors)
   const saveError = Object.values(saveErrors).some(Boolean)
   const importingHistory = useChatStore((state) => state.importingHistory)
-  const frameRef = useMobileViewport(isMobile && !needsApiKey)
+  const frameRef = useMobileViewport(isMobile && !needsApiSetup)
   const activeId = useChatStore((state) => state.activeId)
 
   useAndroidBackInterception(drawerOpen)
@@ -168,8 +169,8 @@ export const App = () => {
     return () => window.removeEventListener('android-back', onBack)
   }, [])
 
-  if (needsApiKey) {
-    return <ApiKeyScreen />
+  if (needsApiSetup) {
+    return <ApiKeyScreen key={apiKey ? 'model' : 'credentials'} selectingModel={Boolean(apiKey)} />
   }
 
   return (

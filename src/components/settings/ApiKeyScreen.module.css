@@ -29,7 +29,7 @@
 }
 
 .form input,
-.form button {
+.form > button {
   box-sizing: border-box;
   min-width: 0;
   min-height: 48px;
@@ -44,13 +44,13 @@
   background: transparent;
 }
 
-.form button {
+.form > button {
   border: 0;
   background: var(--dsw-alias-button-primary-fill);
   color: white;
 }
 
-.form button:disabled {
+.form > button:disabled {
   opacity: 0.5;
 }
 

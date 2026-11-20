@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { android } from '../app/android.js'
+import { parseApiAddress } from './api/address.js'
 import type { TtsVoice } from './api/speech.js'
+import type { ChatModel } from './api/types.js'
 import { normalizeLocation, type UserLocation } from './location.js'
 
 export type Locale = 'zh-CN' | 'en-US'
@@ -12,6 +14,9 @@ export type ThemePreference = 'light' | 'dark' | 'system'
 /** 本机设置，存 localStorage：API Key、语言、主题、位置、朗读音色、深度思考与智能搜索开关、侧边栏收起状态 */
 type Settings = {
   apiKey: string | null
+  apiBaseUrl: string | null
+  chatModel: ChatModel | null
+  chatModels: ChatModel[] | null
   locale: Locale
   localePreference: LocalePreference
   themePreference: ThemePreference
@@ -28,6 +33,7 @@ type Settings = {
 
 const KEYS = {
   apiKey: 'chat-demo:api-key',
+  chatModel: 'replica:chat-model',
   locale: 'chat-demo:locale',
   location: 'chat-demo:location',
   themePreference: 'chat-demo:theme-preference',
@@ -118,21 +124,81 @@ const initialThemePreference = (): ThemePreference => {
 /** 未保存过时使用服务端默认音色 stella（海星） */
 const initialTtsVoice = (): TtsVoice => (read(KEYS.ttsVoice) === 'tide' ? 'tide' : 'stella')
 
-export const useSettings = create<Settings>(() => ({
-  apiKey: android ? android.readApiKey() : read(KEYS.apiKey),
-  locale: resolveLocale(initialLocalePreference()),
-  localePreference: initialLocalePreference(),
-  location: initialLocation(),
-  themePreference: initialThemePreference(),
-  ttsVoice: initialTtsVoice(),
-  autoRead: read(KEYS.autoRead) === 'true',
-  thinking: read(KEYS.thinking) === 'true',
-  search: (read(KEYS.search) ?? (android ? 'true' : 'false')) === 'true',
-  siderCollapsed: read(KEYS.siderCollapsed) === 'true',
-  fontSize: initialFontSize(),
-  foldThinking: read(KEYS.foldThinking) !== 'false',
-  pinnedSessions: initialPinnedSessions(),
-}))
+// 地址和 Key 必须一起保存，避免重启后把自定义服务的 Key 发往官方地址。
+const CREDENTIALS_PREFIX = 'dsapi-credentials-v1:'
+
+const initialCredentials = (): Pick<Settings, 'apiKey' | 'apiBaseUrl'> => {
+  const saved = android ? android.readApiKey() : read(KEYS.apiKey)
+  if (!saved?.startsWith(CREDENTIALS_PREFIX)) {
+    return { apiKey: saved, apiBaseUrl: null }
+  }
+  try {
+    const value = JSON.parse(saved.slice(CREDENTIALS_PREFIX.length)) as Partial<Settings>
+    if (typeof value.apiKey === 'string' && typeof value.apiBaseUrl === 'string') {
+      const apiBaseUrl = parseApiAddress(value.apiBaseUrl)
+      if (apiBaseUrl) {
+        return { apiKey: value.apiKey, apiBaseUrl }
+      }
+    }
+  } catch {
+    // 保存的自定义配置无法恢复时，重新显示登录表单，不回退到官方服务。
+  }
+  return { apiKey: null, apiBaseUrl: null }
+}
+
+const readChatModel = (apiBaseUrl: string | null): ChatModel | null => {
+  try {
+    const value = JSON.parse(read(KEYS.chatModel) ?? 'null') as Pick<
+      Settings,
+      'apiBaseUrl' | 'chatModel'
+    > | null
+    if (
+      value?.apiBaseUrl === apiBaseUrl &&
+      typeof value.chatModel === 'string' &&
+      value.chatModel
+    ) {
+      return value.chatModel
+    }
+  } catch {
+    // 旧版本或不可读的模型偏好按未配置处理。
+  }
+  return null
+}
+
+const saveChatModel = (apiBaseUrl: string | null, chatModel: ChatModel | null) => {
+  write(KEYS.chatModel, chatModel ? JSON.stringify({ apiBaseUrl, chatModel }) : null)
+}
+
+const chooseChatModel = (
+  models: ChatModel[] | null,
+  preferred: ChatModel | null
+): ChatModel | null => {
+  if (preferred && (models === null || models.includes(preferred))) {
+    return preferred
+  }
+  return models?.length === 1 ? models[0] : null
+}
+
+export const useSettings = create<Settings>(() => {
+  const credentials = initialCredentials()
+  return {
+    ...credentials,
+    chatModel: credentials.apiKey ? readChatModel(credentials.apiBaseUrl) : null,
+    chatModels: null,
+    locale: resolveLocale(initialLocalePreference()),
+    localePreference: initialLocalePreference(),
+    location: initialLocation(),
+    themePreference: initialThemePreference(),
+    ttsVoice: initialTtsVoice(),
+    autoRead: read(KEYS.autoRead) === 'true',
+    thinking: read(KEYS.thinking) === 'true',
+    search: (read(KEYS.search) ?? (android ? 'true' : 'false')) === 'true',
+    siderCollapsed: read(KEYS.siderCollapsed) === 'true',
+    fontSize: initialFontSize(),
+    foldThinking: read(KEYS.foldThinking) !== 'false',
+    pinnedSessions: initialPinnedSessions(),
+  }
+})
 
 export const setPinnedSessions = (pinnedSessions: string[]) => {
   write(KEYS.pinnedSessions, JSON.stringify(pinnedSessions))
@@ -173,16 +239,46 @@ export const setAutoRead = (autoRead: boolean) => {
   useSettings.setState({ autoRead })
 }
 
-export const setApiKey = (apiKey: string | null) => {
+export const setApiKey = (
+  apiKey: string | null,
+  address = useSettings.getState().apiBaseUrl,
+  chatModels: ChatModel[] | null = null
+) => {
+  const apiBaseUrl = apiKey ? address : null
+  const saved = apiBaseUrl ? CREDENTIALS_PREFIX + JSON.stringify({ apiKey, apiBaseUrl }) : apiKey
   if (android) {
-    if (!android.writeApiKey(apiKey)) {
+    if (!android.writeApiKey(saved)) {
       return false
     }
   } else {
-    write(KEYS.apiKey, apiKey)
+    write(KEYS.apiKey, saved)
   }
-  useSettings.setState({ apiKey })
+  const chatModel = apiKey ? chooseChatModel(chatModels, readChatModel(apiBaseUrl)) : null
+  saveChatModel(apiBaseUrl, chatModel)
+  useSettings.setState({ apiKey, apiBaseUrl, chatModel, chatModels: apiKey ? chatModels : null })
   return true
+}
+
+export const updateChatModels = (
+  apiKey: string,
+  apiBaseUrl: string | null,
+  chatModels: ChatModel[]
+) => {
+  const current = useSettings.getState()
+  if (current.apiKey !== apiKey || current.apiBaseUrl !== apiBaseUrl) {
+    return
+  }
+  const chatModel = chooseChatModel(chatModels, current.chatModel)
+  saveChatModel(apiBaseUrl, chatModel)
+  useSettings.setState({ chatModels, chatModel })
+}
+
+export const setChatModel = (chatModel: ChatModel) => {
+  const current = useSettings.getState()
+  if (current.apiKey && current.chatModels?.includes(chatModel)) {
+    saveChatModel(current.apiBaseUrl, chatModel)
+    useSettings.setState({ chatModel })
+  }
 }
 
 export const setThinking = (thinking: boolean) => {

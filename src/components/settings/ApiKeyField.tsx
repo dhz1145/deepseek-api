@@ -12,7 +12,17 @@ export const useApiKeyEditor = () => {
   const apiKey = useSettings((state) => state.apiKey)
   const [editing, setEditing] = useState(false)
   const form = useApiKeyForm(() => setEditing(false))
-  return { apiKey, editing, setEditing, form, showInput: !apiKey || editing }
+  const open = () => {
+    if (!editing) {
+      form.reset()
+      setEditing(true)
+    }
+  }
+  const close = () => {
+    form.reset()
+    setEditing(false)
+  }
+  return { apiKey, editing, open, close, form, showInput: !apiKey || editing }
 }
 
 type ApiKeyEditor = ReturnType<typeof useApiKeyEditor>
@@ -21,7 +31,7 @@ type ApiKeyEditor = ReturnType<typeof useApiKeyEditor>
 export const ApiKeyField = ({ editor }: { editor: ApiKeyEditor }) => {
   const t = useTranslate()
   const isMobile = useIsMobile()
-  const { apiKey, editing, setEditing, form, showInput } = editor
+  const { apiKey, editing, open, form, showInput } = editor
 
   return (
     <div className={styles.cell}>
@@ -34,50 +44,75 @@ export const ApiKeyField = ({ editor }: { editor: ApiKeyEditor }) => {
               tone="primary"
               icon={<IconEditOutline16 />}
               tooltip={t('apiKeyEdit')}
-              onClick={() => setEditing(true)}
+              onClick={open}
             />
           </div>
-        ) : (
-          <div className={styles.apiKeyInput}>
-            <input
-              type="password"
-              placeholder={t('apiKeyPlaceholder')}
-              autoComplete="off"
-              spellCheck={false}
-              // 移动端打开设置时不弹键盘，点编辑后才聚焦
-              autoFocus={!isMobile || editing}
-              value={form.value}
-              onChange={(event) => form.setValue(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
-                  void form.submit()
-                }
-              }}
-              onBlur={() => {
-                // 修改时没输入就离开，回到已保存的状态
-                if (apiKey && !form.value.trim()) {
-                  setEditing(false)
-                }
-              }}
-            />
-            {!isMobile && form.value.trim() ? (
-              <>
-                <span className={styles.divider} />
-                <button
-                  type="button"
-                  className={styles.confirm}
-                  disabled={form.verifying}
-                  // 保持输入框焦点
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => void form.submit()}
-                >
-                  {form.verifying ? t('apiKeyVerifying') : t('confirm')}
-                </button>
-              </>
+        ) : null}
+        {showInput ? (
+          <>
+            <div className={styles.apiKeyInput}>
+              <input
+                aria-label={t('apiAddress')}
+                aria-invalid={Boolean(form.addressError)}
+                type="text"
+                inputMode="url"
+                autoComplete="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                disabled={form.verifying}
+                placeholder={t('apiAddressPlaceholder')}
+                value={form.address}
+                onChange={(event) => form.setAddress(event.target.value)}
+              />
+            </div>
+            {form.addressError ? (
+              <div role="alert" className={styles.error}>
+                {form.addressError}
+              </div>
             ) : null}
-          </div>
-        )}
-        {showInput && form.error ? <div className={styles.error}>{form.error}</div> : null}
+            <div className={styles.apiKeyInput}>
+              <input
+                aria-label="DeepSeek API Key"
+                aria-invalid={Boolean(form.error)}
+                type="password"
+                placeholder={t('apiKeyPlaceholder')}
+                autoComplete="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                disabled={form.verifying}
+                // 移动端打开设置时不弹键盘，点编辑后才聚焦
+                autoFocus={!isMobile || editing}
+                value={form.value}
+                onChange={(event) => form.setValue(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                    void form.submit()
+                  }
+                }}
+              />
+              {!isMobile && form.value.trim() ? (
+                <>
+                  <span className={styles.divider} />
+                  <button
+                    type="button"
+                    className={styles.confirm}
+                    disabled={form.verifying}
+                    // 保持输入框焦点
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => void form.submit()}
+                  >
+                    {form.verifying ? t('apiKeyVerifying') : t('confirm')}
+                  </button>
+                </>
+              ) : null}
+            </div>
+            {form.error ? (
+              <div role="alert" className={styles.error}>
+                {form.error}
+              </div>
+            ) : null}
+          </>
+        ) : null}
       </div>
     </div>
   )

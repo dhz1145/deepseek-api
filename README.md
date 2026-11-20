@@ -1,34 +1,41 @@
 <div align="center">
 
-# DeepSeek App Replica
+# DeepSeek API
 
-尽可能复刻 DeepSeek 官方手机端（Android）交互与视觉体验的客户端
+可使用自定义 Anthropic 兼容 API 的非官方 Android 客户端
 
-[![Release](https://img.shields.io/github/v/release/LiJiaHua1024/deepseek-app-replica?style=flat-square&color=2563eb&label=Release)](https://github.com/LiJiaHua1024/deepseek-app-replica/releases/latest)
-[![Platform](https://img.shields.io/badge/Platform-Android%2010%2B-3DDC84?style=flat-square&logo=android&logoColor=white)](https://github.com/LiJiaHua1024/deepseek-app-replica)
+[![Release](https://img.shields.io/github/v/release/dhz1145/deepseek-api?style=flat-square&color=2563eb&label=Release)](https://github.com/dhz1145/deepseek-api/releases/latest)
+[![Platform](https://img.shields.io/badge/Platform-Android%2010%2B-3DDC84?style=flat-square&logo=android&logoColor=white)](https://github.com/dhz1145/deepseek-api)
 [![License](https://img.shields.io/badge/License-GPL%20v3-blue?style=flat-square)](LICENSE)
 
 <br />
 
-[**📥 前往 Releases 下载 APK 安装包**](https://github.com/LiJiaHua1024/deepseek-app-replica/releases/latest) · [**反馈问题**](https://github.com/LiJiaHua1024/deepseek-app-replica/issues)
+[**📥 前往 Releases 下载 APK 安装包**](https://github.com/dhz1145/deepseek-api/releases/latest) · [**反馈问题**](https://github.com/dhz1145/deepseek-api/issues)
 
 </div>
 
 ---
 
+本项目最初基于 [LiJiaHua1024/deepseek-app-replica](https://github.com/LiJiaHua1024/deepseek-app-replica)，是我根据自己的使用习惯修改的版本。感谢原项目作者；本版独立发布，不是 DeepSeek 官方应用，也不会从上游仓库获取更新。
+
 与官方客户端的区别在于未接入官方账号体系，改为直接输入用户自己的 DeepSeek 开放平台 API Key。官方 App 通过账号登录受限于日常用量配额，而直接接入个人 API Key 采用按量计费（Pay-as-you-go），只要账户额度充裕即可自由使用不受限额打断；同时所有会话数据均保存在设备本地。
 
 ## 下载与安装
 
-请前往 [GitHub Releases](https://github.com/LiJiaHua1024/deepseek-app-replica/releases) 页面获取最新发布的 APK 文件，安装至 Android 设备即可使用。
+请前往 [GitHub Releases](https://github.com/dhz1145/deepseek-api/releases) 页面获取最新发布的 APK 文件，安装至 Android 设备即可使用。
+
+安装本仓库发布的签名 APK 后，可在「设置 → 检查更新」获取本仓库的新版本。下载后由 Android 系统确认安装；如有提示，请为 DeepSeek API 开启「允许安装未知应用」。应用不会静默安装，也不会自动推送通知。
+
+> 之前通过调试 APK 安装的版本与正式版签名不同，不能直接覆盖。请先在旧版导出聊天记录，卸载旧版，再安装正式版。卸载会清除本地设置，API Key 需重新输入。
 
 > 当前源码构建的 APK 支持 Android 10（API 级别 29）及以上版本。兼容测试覆盖 Android 10 的预装 WebView 74、升级后的 WebView 83，以及 Android 11 的预装 WebView 83。
 
 ## 使用步骤
 
 1. 安装并打开应用，点击左上角抽屉菜单进入「设置」。
-2. 在 API 配置中填入你在 DeepSeek 开放平台申请的 API Key。
-3. 返回主页面即可开始对话，支持深度思考、联网搜索、语音对讲与相册多模态等功能。
+2. Android 首次启动时，填写 API Key；「请求地址」可留空，默认使用 DeepSeek 官方 API：聊天发往 `https://api.deepseek.com/anthropic/v1/messages`，校验 Key 和加载模型使用 `https://api.deepseek.com/models`。
+   如需自定义，可填写 Anthropic 兼容 HTTPS 基础地址（如 `https://example.com/anthropic`）或完整的 `/v1/messages` 地址。应用使用同一基础路径的 `/v1/models` 校验 Key，沿用原有 Messages 请求格式、模型和 DeepSeek 扩展。Android 通过原生网络层发出 HTTPS 请求，不需要服务端放行 WebView 跨域访问，也不跟随 API 重定向。附件和语音仍需要服务端支持对应接口，不会回退到官方服务。初始化后可在「设置 → 账号管理」点击 API Key 行的箭头编辑。地址框会显示当前自定义地址：不修改则保留，清空并保存则切回官方接口。保存时需要输入对应服务的 API Key。
+3. 模型列表由当前 API 服务提供，可在「设置 → 账号管理」切换。首次连接时，服务返回多个模型就先选择；只有一个则自动选中。选择会保存在本机。
 
 ---
 
@@ -52,8 +59,8 @@
 ### 构建步骤
 ```powershell
 # 1. 克隆代码并安装前端依赖
-git clone https://github.com/LiJiaHua1024/deepseek-app-replica.git
-cd deepseek-app-replica
+git clone https://github.com/dhz1145/deepseek-api.git
+cd deepseek-api
 pnpm install
 
 # 2. 编译生成 Android Debug APK（会自动触发前端构建打包）
@@ -61,6 +68,18 @@ pnpm install
 ```
 
 编译输出路径：`android/app/build/outputs/apk/debug/app-debug.apk`
+
+### 维护者：发布更新
+
+在 `main` 上提交本次修改，将 `package.json` 中的 `version` 提升一版，并递增 `android/app/build.gradle` 中的 `versionCode`。签名文件 `android/app/release.jks` 与 `android/keystore.properties` 只保存在本机；请在安全的位置备份，后续所有版本都用同一把签名密钥。不要把这两个文件提交到 Git。
+
+本地安装依赖，使用有本仓库写入权限的账号登录 GitHub CLI（`gh auth login`），然后运行：
+
+```powershell
+pwsh -File scripts/publish-release.ps1 -Notes '填写本次更新说明'
+```
+
+脚本先生成并检查正式签名 APK，再通过 Git 推送 `main` 和版本标签，并将 `deepseek-api-v<版本>.apk` 发布到本仓库的 GitHub Releases。仅推送源码或创建标签不会向应用提供更新。用户点击「检查更新」时，应用读取本仓库最新正式 Release；草稿或预发行版本不作为更新。
 
 ### 低版本 Android 回归
 

@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { createId } from '../../utils/id.js'
 import { ApiError, streamMessage } from '../api/client.js'
-import type { ChatModel, CreateMessageRequest, MessageParam } from '../api/types.js'
+import type { CreateMessageRequest, MessageParam } from '../api/types.js'
 import {
   extractFileIds,
   getFileErrorCode,
@@ -44,8 +44,6 @@ import {
   type UserMessage,
 } from './types.js'
 
-/** deepseek-flash 同时支持深度思考与图片输入 */
-const MODEL: ChatModel = 'deepseek-flash'
 /** DeepSeek Flash 和 Pro 的官方最大输出预算（384K，含思考）。 */
 const MAX_OUTPUT_TOKENS = 393_216
 /** 所有生成请求统一携带的助手身份说明 */
@@ -269,12 +267,12 @@ export const bindChatPersistence = () => {
 
 /** 按当前开关创建回复：深度思考对应 thinking，智能搜索控制 deepseek_web_search。 */
 const createReply = (): AssistantMessage => {
-  const { thinking, search } = useSettings.getState()
+  const { thinking, search, chatModel } = useSettings.getState()
   return {
     id: createId(),
     role: 'assistant',
     createdAt: Date.now(),
-    model: MODEL,
+    model: chatModel,
     thinking,
     search,
     prefix: true,
@@ -728,11 +726,11 @@ export const continueReply = (sessionId: string, messageId: string) => {
   ) {
     return
   }
-  const { thinking, search } = useSettings.getState()
+  const { thinking, search, chatModel } = useSettings.getState()
   const reply: AssistantMessage = {
     ...previous,
-    // 未记录请求配置的回复，续写时使用默认模型和当前开关。
-    model: previous.model ?? MODEL,
+    // 续写沿用本轮的模型和开关；旧记录未保存时使用当前选择。
+    model: previous.model ?? chatModel,
     thinking: previous.thinking ?? thinking,
     search: previous.search ?? search,
     status: 'pending',
@@ -1078,6 +1076,11 @@ const waitForRetry = (attempt: number, signal: AbortSignal) =>
  */
 const streamReply = async (sessionId: string, initial: AssistantMessage, request: Request) => {
   const controller = new AbortController()
+  const unsubscribeCredentials = useSettings.subscribe((current, previous) => {
+    if (current.apiKey !== previous.apiKey || current.apiBaseUrl !== previous.apiBaseUrl) {
+      controller.abort()
+    }
+  })
   const stopped = new Promise<false>((resolve) => {
     controller.signal.addEventListener('abort', () => resolve(false), { once: true })
   })
@@ -1102,7 +1105,18 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
       let receivedContent = false
       let messages: MessageParam[] = []
       try {
+        if (controller.signal.aborted) {
+          throw controller.signal.reason
+        }
+        const model = initial.model ?? useSettings.getState().chatModel
+        if (!model) {
+          preparing = false
+          throw new ApiError('protocol', { key: 'apiModelRequired' })
+        }
         const prepared = await prepareFiles(sessionId, request, controller.signal)
+        if (controller.signal.aborted) {
+          throw controller.signal.reason
+        }
         preparing = false
         // 附件就绪后获取本轮信息；续写沿用原回答快照，重新生成的快照独立保存。
         const latestReminder = prepared.prefix
@@ -1121,7 +1135,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         const events = streamMessage(
           useSettings.getState().apiKey ?? '',
           {
-            model: initial.model ?? MODEL,
+            model,
             max_tokens: MAX_OUTPUT_TOKENS,
             system: SYSTEM_PROMPT,
             messages,
@@ -1216,6 +1230,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
       }
     }
   } finally {
+    unsubscribeCredentials()
     titleRequests.delete(controller)
     streamFlushes.delete(sessionId)
     cancelAnimationFrame(frame)
