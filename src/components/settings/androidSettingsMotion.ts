@@ -29,6 +29,10 @@ export const createSettingsPageMotion = (
   content: HTMLElement,
   previous: HTMLElement | null
 ) => {
+  // Stock older Android WebViews can animate but do not expose Animation.finished.
+  if (typeof Animation === 'undefined' || !('finished' in Animation.prototype)) {
+    return { seek: () => {}, play: () => Promise.resolve(true), cancel: () => {} }
+  }
   const timing = { duration: timeline, fill: 'both' } as const
   const right = `translateX(${distance}px)`
   const left = `translateX(${-distance}px)`
