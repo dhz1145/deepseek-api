@@ -108,6 +108,13 @@ export type AssistantMessage = MessageBranch & {
 
 export type Message = UserMessage | AssistantMessage
 
+export type ContextCheckpoint = {
+  replyId: string
+  summary: string
+  /** 该轮原文未压完时，记录下一段在摘要材料中的字符位置。 */
+  offset?: number
+}
+
 export type Session = {
   id: string
   title: string
@@ -117,6 +124,7 @@ export type Session = {
   messages: Message[]
   /** undefined 表示线性消息列表；null 表示空会话。 */
   rootMessageId?: string | null
+  contextCheckpoints?: ContextCheckpoint[]
 }
 
 /** 会话列表元数据；消息只在打开会话时加载。 */

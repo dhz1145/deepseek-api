@@ -1,11 +1,13 @@
+import { throwIfAborted } from '../../utils/abort.js'
 import { create } from 'zustand'
 import { createId } from '../../utils/id.js'
-import { ApiError, streamMessage } from '../api/client.js'
+import { ApiError, streamChatMessage } from '../api/client.js'
 import type { CreateMessageRequest, MessageParam } from '../api/types.js'
 import {
   extractFileIds,
   getFileErrorCode,
   getRejectedImagePosition,
+  isContextOverflow,
   isRetryableApiError,
 } from '../api/errors.js'
 import {
@@ -16,8 +18,23 @@ import {
   type AttachmentUpload,
 } from '../attachments.js'
 import { MANY_IMAGES_COUNT, MANY_IMAGES_MAX_EDGE, MAX_IMAGE_EDGE } from '../imageUpload.js'
-import { useSettings } from '../settings.js'
+import { setPinnedSessions, useSettings } from '../settings.js'
 import { appendBranch, getVisibleMessages, normalizeSession, selectVersion } from './branches.js'
+import type { ImportArchiveResult } from './history/importArchive.js'
+import {
+  contextBudget,
+  estimatePrefixTokens,
+  estimateQuestionTokens,
+  prepareHistoryContext,
+  saveContextCheckpoint,
+  type HistoryContext,
+} from './context.js'
+import {
+  createContextSummarizer,
+  includeContextSummary,
+  summarizeCurrentInput,
+} from './contextSummary.js'
+import { prepareCustomAttachments } from './customAttachments.js'
 import * as db from './db.js'
 import {
   clearAllDrafts,
@@ -46,6 +63,8 @@ import {
 
 /** DeepSeek Flash 和 Pro 的官方最大输出预算（384K，含思考）。 */
 const MAX_OUTPUT_TOKENS = 393_216
+const CUSTOM_OUTPUT_TOKENS = 4_096
+const CUSTOM_CONTEXT_WINDOW = 128 * 1024
 /** 所有生成请求统一携带的助手身份说明 */
 const SYSTEM_PROMPT = '该助手为DeepSeek，由深度求索公司创造。'
 /** 保留最近打开的详情；当前会话、生成中及尚未成功保存的会话不淘汰。 */
@@ -56,6 +75,9 @@ const SAFETY_CHECK = { level: 'high' } as const
 const FILE_RETRY_LIMIT = 2
 /** 退避基数，第 n 次重试等待 2^n 倍；连续失败达到上限就放弃，把原始报错展示出来 */
 const FILE_RETRY_BASE_DELAY = 1000
+/** 限制一次聊天轮次内自动压缩的历史请求数，已成功的批次留给下轮接着处理。 */
+const HISTORY_SUMMARY_LIMIT = 6
+const HISTORY_OVERFLOW_RETRIES = 3
 
 /** 阅读链接始终开启，智能搜索开关控制是否另行声明搜索工具（含边想边搜）。 */
 const serverTools = (search: boolean) => {
@@ -121,6 +143,8 @@ const sessionAccess = new Map<string, number>()
 const unsavedSessions = new Set<string>()
 /** 保存失败时保留原件，重试成功后才释放。 */
 const pendingFiles = new Map<string, db.StoredFile[]>()
+const loadOriginalFile = async (sessionId: string, id: string) =>
+  pendingFiles.get(sessionId)?.find((file) => file.id === id)?.blob ?? db.loadFile(id)
 const deletingSessions = new Set<string>()
 const deletionTasks = new Set<Promise<boolean>>()
 const streamFlushes = new Map<string, () => void>()
@@ -267,15 +291,16 @@ export const bindChatPersistence = () => {
 
 /** 按当前开关创建回复：深度思考对应 thinking，智能搜索控制 deepseek_web_search。 */
 const createReply = (): AssistantMessage => {
-  const { thinking, search, chatModel } = useSettings.getState()
+  const { thinking, search, chatConfig, chatModel } = useSettings.getState()
+  const customEndpoint = Boolean(chatConfig.endpoint && chatConfig.format !== 'messages')
   return {
     id: createId(),
     role: 'assistant',
     createdAt: Date.now(),
     model: chatModel,
-    thinking,
-    search,
-    prefix: true,
+    thinking: !customEndpoint && thinking,
+    search: !customEndpoint && search,
+    prefix: !customEndpoint && chatConfig.format === 'messages',
     status: 'pending',
     blocks: [],
   }
@@ -399,9 +424,27 @@ const waitForIdle = (sessionId?: string) =>
 
 let replacingHistory = false
 
+const dedupePinned = (ids: Iterable<string>, validIds: ReadonlySet<string>): string[] => {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const id of ids) {
+    if (validIds.has(id) && !seen.has(id)) {
+      seen.add(id)
+      result.push(id)
+    }
+  }
+  return result
+}
+
+export type MergeHistorySummary = {
+  added: number
+  merged: number
+  unchanged: number
+}
+
 /** 先写入暂存。校验通过后暂停会话修改、停止生成，再原子替换历史。 */
 export const replaceHistory = async (
-  write: (importId: string) => Promise<SessionSummary[]>,
+  write: (importId: string) => Promise<ImportArchiveResult>,
   {
     onCommit,
     clearInBackground = false,
@@ -414,7 +457,7 @@ export const replaceHistory = async (
   let staging: db.HistoryStaging | undefined
   try {
     staging = await db.beginStaging()
-    const summaries = await write(staging.importId)
+    const { summaries, pinnedIds } = await write(staging.importId)
     onCommit?.()
     set({ importingHistory: true })
     for (const controller of Object.values(get().streaming)) {
@@ -431,6 +474,8 @@ export const replaceHistory = async (
     unsavedSessions.clear()
     pendingFiles.clear()
     clearAllDrafts()
+    const validIds = new Set(summaries.map((item) => item.id))
+    setPinnedSessions(dedupePinned(pinnedIds, validIds))
     set({
       ready: true,
       initError: false,
@@ -451,6 +496,94 @@ export const replaceHistory = async (
       retrySaveSessions()
       const { activeId, ready } = get()
       // 提交失败时恢复被取消的详情读取。
+      if (activeId !== null) {
+        void ensureSessionLoaded(activeId)
+      } else if (!ready) {
+        void initChat()
+      }
+    }
+  }
+}
+
+/** 先写入暂存。校验通过后暂停写入与生成，对重叠会话按树与消息语义合并提交，不清空草稿或重置当前会话。 */
+export const mergeHistory = async (
+  write: (importId: string) => Promise<ImportArchiveResult>,
+  {
+    onCommit,
+    clearInBackground = true,
+  }: { onCommit?: () => void; clearInBackground?: boolean } = {}
+): Promise<MergeHistorySummary> => {
+  if (replacingHistory) {
+    throw new Error('History replacement is already in progress')
+  }
+  replacingHistory = true
+  let staging: db.HistoryStaging | undefined
+  try {
+    staging = await db.beginStaging()
+    const { pinnedIds } = await write(staging.importId)
+    onCommit?.()
+    set({ importingHistory: true })
+    for (const controller of Object.values(get().streaming)) {
+      controller.abort()
+    }
+    await Promise.all(deletionTasks)
+    historyEpoch += 1
+    initTask = undefined
+    sessionLoads.clear()
+    await waitForIdle()
+
+    const localOverrides = new Map<string, { session: Session; files?: db.StoredFile[] }>()
+    for (const id of unsavedSessions) {
+      const session = getSession(id)
+      if (session) {
+        localOverrides.set(id, { session, files: pendingFiles.get(id) })
+      }
+    }
+
+    const result = await staging.commitMerge({ localOverrides, clearInBackground })
+    const { activeId, sessionCache, sessionLoadErrors, sessionSaveErrors } = get()
+    const refreshedCache = { ...sessionCache }
+    const updatedSet = new Set(result.updatedIds)
+
+    for (const id of result.updatedIds) {
+      unsavedSessions.delete(id)
+      pendingFiles.delete(id)
+      if (Object.hasOwn(refreshedCache, id) || id === activeId) {
+        const refreshed = await db.loadSession(id)
+        if (refreshed) {
+          touchSession(id)
+          refreshedCache[id] = refreshed
+        }
+      }
+    }
+
+    const validIds = new Set(result.summaries.map((item) => item.id))
+    setPinnedSessions(
+      dedupePinned([...useSettings.getState().pinnedSessions, ...pinnedIds], validIds)
+    )
+    set({
+      ready: true,
+      initError: false,
+      sessions: sortSessions(result.summaries),
+      sessionCache: refreshedCache,
+      sessionLoadErrors: Object.fromEntries(
+        Object.entries(sessionLoadErrors).filter(([id]) => !updatedSet.has(id))
+      ),
+      sessionSaveErrors: Object.fromEntries(
+        Object.entries(sessionSaveErrors).filter(([id]) => !updatedSet.has(id))
+      ),
+    })
+    trimSessionCache()
+    return { added: result.added, merged: result.merged, unchanged: result.unchanged }
+  } catch (error) {
+    await staging?.discard().catch(db.reportStorageError('clear unfinished history merge'))
+    throw error
+  } finally {
+    replacingHistory = false
+    if (get().importingHistory) {
+      set({ importingHistory: false })
+      retrySaveSessions()
+      const { activeId, ready } = get()
       if (activeId !== null) {
         void ensureSessionLoaded(activeId)
       } else if (!ready) {
@@ -569,7 +702,13 @@ export const sendMessage = (targetSessionId: string | null) => {
   if (get().importingHistory || !get().ready) {
     return false
   }
-  const prepared = prepareDraftMessage(getDraft(targetSessionId), useUploads.getState().tasks)
+  const { chatConfig } = useSettings.getState()
+  const customEndpoint = Boolean(chatConfig.endpoint && chatConfig.format !== 'messages')
+  const prepared = prepareDraftMessage(
+    getDraft(targetSessionId),
+    useUploads.getState().tasks,
+    customEndpoint
+  )
   if (!prepared) {
     return false
   }
@@ -631,7 +770,7 @@ export const sendMessage = (targetSessionId: string | null) => {
     ])
   }
   persist(sessionId)
-  clearSentDraft(targetSessionId)
+  clearSentDraft(targetSessionId, customEndpoint)
   void streamReply(sessionId, reply, { history, question })
   return true
 }
@@ -708,7 +847,12 @@ export const selectMessageVersion = (sessionId: string, messageId: string) => {
 
 /** 继续最后一条未完成的回答：保留原消息与开关，仅将新流的内容追加到原块之后。 */
 export const continueReply = (sessionId: string, messageId: string) => {
-  if (get().importingHistory || deletingSessions.has(sessionId)) {
+  const { chatConfig } = useSettings.getState()
+  if (
+    get().importingHistory ||
+    deletingSessions.has(sessionId) ||
+    chatConfig.format !== 'messages'
+  ) {
     return
   }
   const session = getSession(sessionId)
@@ -877,14 +1021,14 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
     }
   }
   for (const file of pending.values()) {
-    signal.throwIfAborted()
+    throwIfAborted(signal)
     try {
       const result = await Promise.race([ensureServerId(apiKey, file), aborted])
       if (result) {
         saveUploadedFiles(sessionId, new Map([[file.id, result]]))
       }
     } catch {
-      signal.throwIfAborted()
+      throwIfAborted(signal)
     }
   }
 
@@ -937,10 +1081,8 @@ const uploadRequestImage = async (
   ) {
     return { serverId: task.serverId, serverImage: task.serverImage }
   }
-  const blob =
-    pendingFiles.get(sessionId)?.find(({ id }) => id === file.id)?.blob ??
-    (await db.loadFile(file.id))
-  signal.throwIfAborted()
+  const blob = await loadOriginalFile(sessionId, file.id)
+  throwIfAborted(signal)
   if (!blob) {
     return null
   }
@@ -950,7 +1092,7 @@ const uploadRequestImage = async (
   if (result.serverImage?.converted && result.serverImage.maxEdge <= maxEdge) {
     return result
   }
-  signal.throwIfAborted()
+  throwIfAborted(signal)
   return uploadAttachment(apiKey, file.id, blob, file.name, true, options)
 }
 
@@ -971,11 +1113,12 @@ const repairRejectedImage = async (
     return false
   }
   const block = message.content[position.block]
-  if (block?.type !== 'image') {
+  if (block?.type !== 'image' || block.source.type !== 'file') {
     return false
   }
+  const { file_id: fileId } = block.source
   const images = getRequestImages(refreshRequest(sessionId, request))
-  const file = images.find(({ serverId }) => serverId === block.source.file_id)
+  const file = images.find(({ serverId }) => serverId === fileId)
   const maxEdge = images.length >= MANY_IMAGES_COUNT ? MANY_IMAGES_MAX_EDGE : MAX_IMAGE_EDGE
   if (!file || (file.serverImage?.converted && file.serverImage.maxEdge <= maxEdge)) {
     return false
@@ -1075,9 +1218,18 @@ const waitForRetry = (attempt: number, signal: AbortSignal) =>
  * 服务端拒绝附件时尝试重新补传后重发。失效的 file_id 退避重试，图片按报错中指明的位置修复。
  */
 const streamReply = async (sessionId: string, initial: AssistantMessage, request: Request) => {
+  const { apiKey: storedKey, chatConfig, chatModel } = useSettings.getState()
+  const apiKey = storedKey ?? ''
+  const custom = Boolean(chatConfig.endpoint)
+  const inlineAttachments = custom && chatConfig.format !== 'messages'
+  const model = (inlineAttachments ? chatModel : (initial.model ?? chatModel)) || null
   const controller = new AbortController()
   const unsubscribeCredentials = useSettings.subscribe((current, previous) => {
-    if (current.apiKey !== previous.apiKey || current.apiBaseUrl !== previous.apiBaseUrl) {
+    if (
+      current.apiKey !== previous.apiKey ||
+      current.apiBaseUrl !== previous.apiBaseUrl ||
+      current.chatConfig.format !== previous.chatConfig.format
+    ) {
       controller.abort()
     }
   })
@@ -1088,7 +1240,15 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
     titleRequests.add(controller)
   }
   set((state) => ({ streaming: { ...state.streaming, [sessionId]: controller } }))
-  let reply = initial
+  let reply = inlineAttachments
+    ? {
+        ...initial,
+        model,
+        thinking: false,
+        search: false,
+        prefix: false,
+      }
+    : initial
   let frame = 0
   const flush = () => {
     cancelAnimationFrame(frame)
@@ -1097,55 +1257,123 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   }
   streamFlushes.set(sessionId, flush)
 
+  const signal = controller.signal
+  const summarize = createContextSummarizer(apiKey, signal, chatConfig, model)
+  const initialOutputTokens = custom ? CUSTOM_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS
+  const window = custom ? CUSTOM_CONTEXT_WINDOW : undefined
+  const budget = contextBudget(initialOutputTokens, window)
+  let historyBudget = Math.max(
+    0,
+    budget.input - estimateQuestionTokens(request.question) - estimatePrefixTokens(request.prefix)
+  )
+  let historyRetries = 0
+  let historySummaryRequests = 0
+  let context: HistoryContext | undefined
+  let maxOutputTokens = initialOutputTokens
+  let reduceInput = false
+  let reducedInput: Awaited<ReturnType<typeof summarizeCurrentInput>> = null
   let invalidatedRetries = 0
   try {
     for (;;) {
       /** 附件补齐前出错属于上传失败，请求还没有发出 */
-      let preparing = true
+      let preparing = false
       let receivedContent = false
       let messages: MessageParam[] = []
+      let attempt = request
       try {
-        if (controller.signal.aborted) {
-          throw controller.signal.reason
-        }
-        const model = initial.model ?? useSettings.getState().chatModel
+        throwIfAborted(signal)
         if (!model) {
-          preparing = false
           throw new ApiError('protocol', { key: 'apiModelRequired' })
         }
-        const prepared = await prepareFiles(sessionId, request, controller.signal)
-        if (controller.signal.aborted) {
-          throw controller.signal.reason
+        context ??= await prepareHistoryContext({
+          history: request.history,
+          checkpoints: getSession(sessionId)?.contextCheckpoints,
+          budget: historyBudget,
+          recentBudget: budget.recent,
+          summarize: (input) =>
+            historySummaryRequests++ < HISTORY_SUMMARY_LIMIT
+              ? summarize(input)
+              : Promise.resolve(null),
+          save: (checkpoint) => {
+            updateSession(sessionId, (session) => ({
+              ...session,
+              contextCheckpoints: saveContextCheckpoint(session.contextCheckpoints, checkpoint),
+            }))
+            persist(sessionId)
+          },
+          signal,
+        })
+        throwIfAborted(signal)
+        attempt = { ...request, history: context.history }
+        let prepared = attempt
+        if (!inlineAttachments) {
+          preparing = true
+          prepared = await prepareFiles(sessionId, attempt, signal)
+          preparing = false
         }
-        preparing = false
+        const inlineFiles = inlineAttachments
+          ? await prepareCustomAttachments(
+              chatConfig.format,
+              prepared.history,
+              reducedInput?.question ?? prepared.question,
+              (id) => loadOriginalFile(sessionId, id),
+              signal
+            )
+          : undefined
+        if (reduceInput && !reducedInput) {
+          reducedInput = await summarizeCurrentInput({
+            apiKey,
+            question: prepared.question,
+            prefix: prepared.prefix,
+            summarize,
+            loadFile: (id) => loadOriginalFile(sessionId, id),
+            signal,
+            inlineFiles: inlineFiles?.get(prepared.question.id),
+          })
+          if (!reducedInput) {
+            throw new ApiError('protocol', { key: 'replyInputTooLong' })
+          }
+          historyBudget = Math.max(
+            0,
+            Math.min(
+              budget.recent,
+              contextBudget(maxOutputTokens, window).input -
+                estimateQuestionTokens(reducedInput.question) -
+                estimatePrefixTokens(reducedInput.prefix)
+            )
+          )
+          context = undefined
+          continue
+        }
         // 附件就绪后获取本轮信息；续写沿用原回答快照，重新生成的快照独立保存。
-        const latestReminder = prepared.prefix
-          ? prepared.prefix.latestReminder
-          : createLatestReminder(useSettings.getState())
+        const latestReminder = inlineAttachments
+          ? undefined
+          : prepared.prefix
+            ? prepared.prefix.latestReminder
+            : createLatestReminder(useSettings.getState())
         reply = { ...reply, latestReminder }
         updateReply(sessionId, reply)
         persist(sessionId)
         messages = toRequestMessages(
           prepared.history,
-          prepared.question,
-          prepared.prefix,
+          reducedInput?.question ?? prepared.question,
+          reducedInput ? reducedInput.prefix : prepared.prefix,
           initial.thinking ?? false,
-          latestReminder
+          latestReminder,
+          inlineFiles
         )
-        const events = streamMessage(
-          useSettings.getState().apiKey ?? '',
-          {
-            model,
-            max_tokens: MAX_OUTPUT_TOKENS,
-            system: SYSTEM_PROMPT,
-            messages,
-            thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
-            safety_check: SAFETY_CHECK,
-            tools: serverTools(initial.search ?? false),
-            ...(titleRequests.has(controller) ? { title: { enabled: true } } : {}),
-          },
-          controller.signal
-        )
+        includeContextSummary(messages, context.summary)
+        const body: CreateMessageRequest = {
+          model,
+          max_tokens: maxOutputTokens,
+          system: inlineAttachments ? '' : SYSTEM_PROMPT,
+          messages,
+          thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
+          safety_check: SAFETY_CHECK,
+          tools: serverTools(initial.search ?? false),
+          ...(titleRequests.has(controller) ? { title: { enabled: true } } : {}),
+        }
+        const events = streamChatMessage(chatConfig, apiKey, body, signal)
         const blockIndexes = new Map<number, number>()
         for await (const event of events) {
           receivedContent ||= event.type === 'content_block_start'
@@ -1169,6 +1397,20 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           }
         }
         reply = settleReply(reply, 'done', Date.now())
+        if (
+          (custom || chatConfig.format !== 'messages') &&
+          titleRequests.has(controller) &&
+          !get().importingHistory
+        ) {
+          const title =
+            request.question.content.trim().split(/\r?\n/, 1)[0] || request.question.files[0]?.name
+          if (title) {
+            const preview = Array.from(title).slice(0, 64).join('')
+            updateSession(sessionId, (session) =>
+              session.title ? session : { ...session, title: preview }
+            )
+          }
+        }
         break
       } catch (error) {
         if (controller.signal.aborted) {
@@ -1186,23 +1428,46 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         }
         // 收到过内容块（含丢弃的客户端工具）后不自动重发。
         if (!receivedContent) {
-          if (
-            invalidatedRetries < FILE_RETRY_LIMIT &&
-            reuploadInvalidatedFiles(sessionId, request, error)
-          ) {
-            await waitForRetry(invalidatedRetries++, controller.signal)
-            if (!controller.signal.aborted) {
+          if (isContextOverflow(error)) {
+            if (context?.tokens) {
+              // 每次严格收紧历史预算。最后一次保留本轮输入，验证是否是输入本身过长。
+              historyBudget =
+                ++historyRetries < HISTORY_OVERFLOW_RETRIES ? Math.floor(context.tokens / 2) : 0
+              context = undefined
               continue
             }
-          } else {
-            const repaired = await Promise.race([
-              stopped,
-              repairRejectedImage(sessionId, request, messages, error, controller.signal).catch(
-                () => false
-              ),
-            ])
-            if (repaired) {
+            if (maxOutputTokens === initialOutputTokens) {
+              maxOutputTokens = custom ? 1_024 : initial.thinking ? 65_536 : 8_192
               continue
+            }
+            if (!reduceInput) {
+              reduceInput = true
+              continue
+            }
+            reply = settleReply(reply, 'error', Date.now(), {
+              kind: error.kind,
+              message: error.message,
+              localMessage: { key: 'replyInputTooLong' },
+            })
+            break
+          }
+          if (!inlineAttachments) {
+            if (
+              invalidatedRetries < FILE_RETRY_LIMIT &&
+              reuploadInvalidatedFiles(sessionId, attempt, error)
+            ) {
+              await waitForRetry(invalidatedRetries++, controller.signal)
+              if (!controller.signal.aborted) {
+                continue
+              }
+            } else if (chatConfig.format === 'messages') {
+              const repaired = await Promise.race([
+                stopped,
+                repairRejectedImage(sessionId, attempt, messages, error, signal).catch(() => false),
+              ])
+              if (repaired) {
+                continue
+              }
             }
           }
         }
@@ -1210,7 +1475,9 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           reply = settleReply(reply, 'stopped', Date.now())
           break
         }
-        if (error instanceof ApiError && error.kind === 'interrupted' && reply.stopReason) {
+        if (receivedContent && isContextOverflow(error)) {
+          reply = settleReply(reply, 'stopped', Date.now())
+        } else if (error instanceof ApiError && error.kind === 'interrupted' && reply.stopReason) {
           // 已收到 message_delta 的结束原因，只是缺了结尾的 message_stop
           reply = settleReply(reply, 'done', Date.now())
         } else if (error instanceof ApiError) {

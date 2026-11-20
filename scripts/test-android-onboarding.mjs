@@ -174,7 +174,10 @@ try {
     await evaluate(`(() => {
       const key = document.querySelector(${JSON.stringify(password)});
       const address = key.previousElementSibling;
-      return !!address && address.matches('input[inputmode="url"]') && address.value === ''
+      const protocol = address?.previousElementSibling;
+      return protocol?.matches('select') && protocol.value === 'messages'
+        && Array.from(protocol.options).map(option => option.value).join(',') === 'messages,chat,responses'
+        && !!address && address.matches('input[inputmode="url"]') && address.value === ''
         && getComputedStyle(address).borderRadius === getComputedStyle(key).borderRadius;
     })()`),
     true,
@@ -370,6 +373,36 @@ try {
   )
   assert.deepEqual(webview.exceptions, [])
   console.log('PASS cold start with the API key and completed conversation persisted locally')
+
+  const updateDialog = `document.querySelector('[role="dialog"]')`
+  const update = (status) =>
+    webview.evaluate(
+      `window.dispatchEvent(new CustomEvent('android-update', {detail: ${JSON.stringify(status)}}))`
+    )
+  await update({ phase: 'idle', automatic: true, message: 'current' })
+  assert.equal(await webview.evaluate(`!!${updateDialog}`), false)
+  await update({ phase: 'idle', automatic: true, message: 'checkFailed' })
+  assert.equal(await webview.evaluate(`!!${updateDialog}`), false)
+  await update({ phase: 'available', automatic: true, offer: 1, version: '99.0.0' })
+  await until('Automatic update should open a dialog with the version', () =>
+    webview.evaluate(`${updateDialog}?.textContent.includes('v99.0.0')`)
+  )
+  await webview.evaluate(`${updateDialog}.querySelector('button[aria-label]').click()`)
+  await until('Dismissal should close the update dialog', () =>
+    webview.evaluate(`!${updateDialog}`)
+  )
+  await update({ phase: 'available', automatic: true, offer: 1, version: '99.0.0' })
+  assert.equal(await webview.evaluate(`!!${updateDialog}`), false)
+  await update({ phase: 'available', automatic: true, offer: 2, version: '99.0.0' })
+  await until('A new foreground offer should re-open the update dialog', () =>
+    webview.evaluate(`!!${updateDialog}`)
+  )
+  await update({ phase: 'downloading', offer: 2, version: '99.0.0', progress: 42 })
+  await until('The update dialog should display download progress', () =>
+    webview.evaluate(`${updateDialog}?.querySelector('progress')?.value === 42`)
+  )
+  assert.deepEqual(webview.exceptions, [])
+  console.log('PASS automatic update dialog, dismissal, new foreground offer and download progress')
 } catch (error) {
   if (webview?.exceptions.length) console.error(webview.exceptions)
   throw error

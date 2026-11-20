@@ -327,6 +327,7 @@ a.row:active,
     &::before {
       content: '';
       box-sizing: border-box;
+      flex-shrink: 0;
       width: 20px;
       height: 20px;
       border: 2px solid #6d7684;
@@ -369,6 +370,14 @@ a.row:active,
   margin: 0 18px 18px;
   color: var(--settings-muted);
   text-align: center;
+}
+
+.importDescription {
+  margin: 14px 18px 18px;
+  color: var(--settings-muted);
+  font-size: 13px;
+  line-height: 20px;
+  text-align: start;
 }
 
 .voiceSheet {

@@ -5,6 +5,7 @@ import type {
   MessageStreamEvent,
   OutputBlockStart,
   TextBlockParam,
+  UserBlockParam,
 } from '../api/types.js'
 import type {
   AssistantMessage,
@@ -185,8 +186,7 @@ export const canContinueReply = (reply: AssistantMessage): boolean => {
     return false
   }
   return (
-    reply.status === 'stopped' ||
-    (reply.status === 'done' && reply.stopReason === 'max_tokens')
+    reply.status === 'stopped' || (reply.status === 'done' && reply.stopReason === 'max_tokens')
   )
 }
 
@@ -202,8 +202,10 @@ const isUsableReply = (message: Message): message is AssistantMessage =>
   getReplyText(message) !== ''
 
 /** 有文件时用内容块数组：先文件后文本，文件按 Files API 的 file_id 引用 */
-const toUserParam = ({ content, files }: UserMessage): MessageParam => {
-  const blocks = toFileBlocks(files)
+const toUserParam = (
+  { content, files }: UserMessage,
+  blocks: UserBlockParam[] = toFileBlocks(files)
+): MessageParam => {
   return blocks.length === 0
     ? { role: 'user', content }
     : {
@@ -305,7 +307,8 @@ export const toRequestMessages = (
   question: UserMessage,
   prefix?: AssistantMessage,
   thinking = prefix?.thinking ?? false,
-  latestReminder?: string
+  latestReminder?: string,
+  inlineFiles?: ReadonlyMap<string, UserBlockParam[]>
 ): MessageParam[] => {
   const messages: MessageParam[] = []
   let previousReminder: string | undefined
@@ -318,14 +321,17 @@ export const toRequestMessages = (
   }
   for (const [user, reply] of getContextRounds(history)) {
     // 历史提问没有文字、附件也都没有 serverId 时，提问为空，连同回答一起省略。
-    if (!user.content && toFileBlocks(user.files).length === 0) {
+    const blocks = inlineFiles ? (inlineFiles.get(user.id) ?? []) : toFileBlocks(user.files)
+    if (!user.content && blocks.length === 0) {
       continue
     }
     appendReminder(reply.latestReminder)
-    messages.push(toUserParam(user), toAssistantParam(reply))
+    messages.push(toUserParam(user, blocks), toAssistantParam(reply))
   }
   appendReminder(latestReminder)
-  messages.push(toUserParam(question))
+  messages.push(
+    toUserParam(question, inlineFiles ? (inlineFiles.get(question.id) ?? []) : undefined)
+  )
   if (prefix?.prefix) {
     const assistant = toAssistantParam(prefix, true, thinking)
     // 没有非空白正文或有效思考时直接重发原问题，避免服务端拒绝空 Prefill。

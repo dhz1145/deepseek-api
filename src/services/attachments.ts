@@ -1,3 +1,4 @@
+import { throwIfAborted } from '../utils/abort.js'
 import { create } from 'zustand'
 import { android } from '../app/android.js'
 import type { LinkedMessage, TranslationMessage } from '../i18n/index.js'
@@ -139,7 +140,7 @@ const sendAttachment = async (
   }
 
   let prepared = await prepareImageUpload(file, signal, maxEdge, forceConversion)
-  signal.throwIfAborted()
+  throwIfAborted(signal)
   if (forceConversion && !prepared.image?.converted) {
     throw new ApiError('protocol', { key: 'uploadParseFailed' })
   }
@@ -176,7 +177,7 @@ const enqueueUpload = (
   new Promise<AttachmentUpload>((resolve, reject) => {
     queue.push(async () => {
       try {
-        signal.throwIfAborted()
+        throwIfAborted(signal)
         const body = file instanceof File ? file : new File([file], name, { type: file.type })
         resolve(await sendAttachment(apiKey, body, isImage, signal, options))
       } catch (error) {

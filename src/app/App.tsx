@@ -1,5 +1,6 @@
 import { memo, useEffect } from 'react'
 import { android } from './android.js'
+import { AndroidUpdatePrompt } from './AndroidUpdatePrompt.js'
 import { useAndroidBackInterception } from './useAndroidBackInterception.js'
 import { useTranslate } from '../i18n/index.js'
 import { useSettings } from '../services/settings.js'
@@ -170,7 +171,12 @@ export const App = () => {
   }, [])
 
   if (needsApiSetup) {
-    return <ApiKeyScreen key={apiKey ? 'model' : 'credentials'} selectingModel={Boolean(apiKey)} />
+    return (
+      <>
+        <ApiKeyScreen key={apiKey ? 'model' : 'credentials'} selectingModel={Boolean(apiKey)} />
+        <AndroidUpdatePrompt key="android-update" />
+      </>
+    )
   }
 
   return (
@@ -205,6 +211,7 @@ export const App = () => {
       </div>
       {android ? <AndroidSettings chatFrame={frameRef} /> : <SettingsDialog />}
       <Toast />
+      {android ? <AndroidUpdatePrompt key="android-update" /> : null}
     </>
   )
 }

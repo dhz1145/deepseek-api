@@ -8,6 +8,7 @@ export const ChatModelField = () => {
   const t = useTranslate()
   const apiKey = useSettings((state) => state.apiKey)
   const apiBaseUrl = useSettings((state) => state.apiBaseUrl)
+  const format = useSettings((state) => state.chatConfig.format)
   const model = useSettings((state) => state.chatModel)
   const models = useSettings((state) => state.chatModels)
   const [status, setStatus] = useState<'idle' | 'loading' | 'error'>('idle')
@@ -20,10 +21,10 @@ export const ChatModelField = () => {
     const controller = new AbortController()
     const { signal } = controller
     setStatus('loading')
-    void listChatModels(apiKey, apiBaseUrl, signal).then(
+    void listChatModels(apiKey, apiBaseUrl, signal, format).then(
       (items) => {
         if (!signal.aborted) {
-          updateChatModels(apiKey, apiBaseUrl, items)
+          updateChatModels(apiKey, apiBaseUrl, items, format)
           setStatus('idle')
         }
       },
@@ -34,7 +35,7 @@ export const ChatModelField = () => {
       }
     )
     return () => controller.abort()
-  }, [apiKey, apiBaseUrl, refresh])
+  }, [apiKey, apiBaseUrl, format, refresh])
 
   if (!apiKey) {
     return null

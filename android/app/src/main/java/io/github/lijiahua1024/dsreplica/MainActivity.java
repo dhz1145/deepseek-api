@@ -6,6 +6,7 @@ import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
@@ -37,6 +38,7 @@ import java.util.concurrent.Executors;
 public final class MainActivity extends Activity {
     private static final String ASSET_HOST = "appassets.androidplatform.net";
     private static final String HOME = "https://" + ASSET_HOST + "/index.html";
+    private static final String PROFILE_KEY = "profile";
     private static final int MICROPHONE = 1;
     private static final int FILE_CHOOSER = 2;
     private static final int PHOTOS = 3;
@@ -46,6 +48,7 @@ public final class MainActivity extends Activity {
     private FrameLayout frame;
     private ApiKeyStore keys;
     private NativeApiTransport apiTransport;
+    private SharedPreferences profilePreferences;
     private ValueCallback<Uri[]> fileCallback;
     private boolean choosingPhotos;
     private boolean keyboardVisible;
@@ -68,6 +71,7 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         keys = new ApiKeyStore(this);
         apiTransport = new NativeApiTransport(getCacheDir());
+        profilePreferences = getSharedPreferences("account_profile", MODE_PRIVATE);
         recentPhotos = new RecentPhotos(getContentResolver());
         historyExport = new FileExport(getContentResolver());
         imageSave = new ImageSave(getContentResolver());
@@ -409,6 +413,7 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onStop() {
+        updater.stop();
         recorder.finish(false);
         webView.evaluateJavascript("window.dispatchEvent(new Event('android-recording-interrupted'))", null);
         super.onStop();
@@ -480,6 +485,17 @@ public final class MainActivity extends Activity {
 
         @JavascriptInterface
         public boolean writeApiKey(String value) { return keys.write(value); }
+
+        @JavascriptInterface
+        public String readAccountProfile() { return profilePreferences.getString(PROFILE_KEY, null); }
+
+        @JavascriptInterface
+        public boolean writeAccountProfile(String value) {
+            SharedPreferences.Editor editor = profilePreferences.edit();
+            if (value == null) editor.remove(PROFILE_KEY);
+            else editor.putString(PROFILE_KEY, value);
+            return editor.commit();
+        }
 
         @JavascriptInterface
         public void setDarkBars(boolean dark) { runOnUiThread(() -> setBars(dark)); }

@@ -12,7 +12,8 @@ const json = (value: unknown) => new Blob([JSON.stringify(value)], { type: 'appl
  * 只写出本地有原件的图片，每个会话目录各写一份；其他附件只有元数据。
  */
 export const exportArchive = async (
-  sessions: Iterable<Session> | AsyncIterable<Session>
+  sessions: Iterable<Session> | AsyncIterable<Session>,
+  pinnedIds?: ReadonlySet<string>
 ): Promise<Blob> => {
   const manifest: Manifest = { export_format_version: EXPORT_FORMAT_VERSION }
   const entries = [{ name: MANIFEST_PATH, blob: json(manifest) }]
@@ -30,15 +31,19 @@ export const exportArchive = async (
       }
     }
     const images = new Map<string, Blob>()
-    const data = toSessionFile(session, ({ id, name, isImage }) => {
-      const blob = originals.get(id)
-      if (!blob || !isImage) {
-        return null
-      }
-      const path = imagePath(session.id, id, name)
-      images.set(path, blob)
-      return path
-    })
+    const data = toSessionFile(
+      session,
+      ({ id, name, isImage }) => {
+        const blob = originals.get(id)
+        if (!blob || !isImage) {
+          return null
+        }
+        const path = imagePath(session.id, id, name)
+        images.set(path, blob)
+        return path
+      },
+      pinnedIds?.has(session.id) ?? false
+    )
     entries.push({ name: sessionPath(session.id), blob: json(data) })
     for (const [name, blob] of images) {
       imageEntries.push({ name, blob })

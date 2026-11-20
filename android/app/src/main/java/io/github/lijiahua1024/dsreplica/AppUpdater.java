@@ -34,6 +34,9 @@ final class AppUpdater {
     private String stagedVersion;
     private boolean busy;
     private boolean resumed;
+    private boolean foregroundCheckPending = true;
+    private boolean returningFromInstaller;
+    private int offer;
     private boolean awaitingPermission;
     private boolean permissionReturned;
 
@@ -57,6 +60,7 @@ final class AppUpdater {
                     busy = false;
                     stagedVersion = restoredVersion;
                     publish();
+                    checkOnForeground();
                 });
             });
         }
@@ -64,7 +68,15 @@ final class AppUpdater {
 
     String status() { return snapshot; }
 
-    void check() {
+    void check() { check(false); }
+
+    private void checkOnForeground() {
+        if (!foregroundCheckPending || busy || !resumed) return;
+        foregroundCheckPending = false;
+        check(true);
+    }
+
+    private void check(boolean automatic) {
         if (busy || !resumed) return;
         busy = true;
         publish("checking", null, null, null);
@@ -74,13 +86,16 @@ final class AppUpdater {
                 post(() -> {
                     busy = false;
                     release = latest;
-                    publish(latest == null ? "current" : null);
+                    if (automatic && latest != null) offer++;
+                    publish(latest == null ? "current" : null, automatic);
+                    checkOnForeground();
                 });
             } catch (IOException | JSONException failure) {
                 Log.w(TAG, "Release lookup failed: " + failure.getClass().getSimpleName());
                 post(() -> {
                     busy = false;
-                    publish("checkFailed");
+                    publish("checkFailed", automatic);
+                    checkOnForeground();
                 });
             }
         });
@@ -136,10 +151,15 @@ final class AppUpdater {
 
     void resume() {
         resumed = true;
+        if (awaitingPermission || returningFromInstaller) foregroundCheckPending = false;
+        returningFromInstaller = false;
         finishPermissionRequest();
+        checkOnForeground();
     }
 
     void pause() { resumed = false; }
+
+    void stop() { foregroundCheckPending = true; }
 
     void close() { worker.shutdownNow(); }
 
@@ -213,6 +233,7 @@ final class AppUpdater {
             try {
                 // Preserve the calling package on installers that obtain it from the activity result.
                 activity.startActivityForResult(explicit, SYSTEM_INSTALLER);
+                returningFromInstaller = true;
                 return true;
             } catch (ActivityNotFoundException | SecurityException failure) {
                 // Some ROMs expose several installer activities with different access rules.
@@ -229,20 +250,26 @@ final class AppUpdater {
 
     private void publish() { publish(null); }
 
-    private void publish(String message) {
+    private void publish(String message) { publish(message, false); }
+
+    private void publish(String message, boolean automatic) {
         if (stagedVersion != null && (release == null || stagedVersion.equals(release.version()))) {
-            publish("ready", stagedVersion, null, message);
+            publish("ready", stagedVersion, null, message, automatic);
         } else if (release != null) {
-            publish("available", release.version(), null, message);
+            publish("available", release.version(), null, message, automatic);
         } else {
-            publish("idle", null, null, message);
+            publish("idle", null, null, message, automatic);
         }
     }
 
     private void publish(String phase, String version, Integer progress, String message) {
+        publish(phase, version, progress, message, false);
+    }
+
+    private void publish(String phase, String version, Integer progress, String message, boolean automatic) {
         try {
             JSONObject status = new JSONObject().put("phase", phase)
-                .put("version", version).put("progress", progress);
+                .put("version", version).put("progress", progress).put("offer", offer).put("automatic", automatic);
             snapshot = status.toString();
             notify.accept(status.put("message", message).toString());
         } catch (JSONException impossible) {

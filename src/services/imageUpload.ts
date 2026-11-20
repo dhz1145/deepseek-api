@@ -1,3 +1,4 @@
+import { throwIfAborted } from '../utils/abort.js'
 /** 公开 API 的单边上限。对话请求包含至少 15 张图片时使用较小的上限。 */
 export const MAX_IMAGE_EDGE = 8192
 export const MANY_IMAGES_MAX_EDGE = 4096
@@ -40,7 +41,7 @@ export const prepareImageUpload = async (
     }
     const { naturalWidth, naturalHeight } = image
     const standardFormat = await isJpegOrPng(file)
-    signal.throwIfAborted()
+    throwIfAborted(signal)
     const original = {
       file,
       image: { maxEdge: Math.max(naturalWidth, naturalHeight), converted: false },
@@ -66,7 +67,7 @@ export const prepareImageUpload = async (
       const blob = await new Promise<Blob | null>((resolve) =>
         canvas.toBlob(resolve, 'image/webp', 0.9)
       )
-      signal.throwIfAborted()
+      throwIfAborted(signal)
       if (!blob) {
         return original
       }

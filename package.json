@@ -1,7 +1,7 @@
 {
   "name": "deepseek-api",
-  "version": "0.4.3",
-  "description": "支持自定义 Anthropic 兼容 API 的非官方 Android 客户端。",
+  "version": "0.7.2",
+  "description": "支持自定义 Anthropic 与 OpenAI 兼容 API 的非官方 Android 客户端。",
   "license": "GPL-3.0-or-later",
   "private": true,
   "type": "module",
@@ -31,9 +31,11 @@
     "mermaid": "11.10.1",
     "micromark-extension-gfm": "3.0.0",
     "micromark-extension-llm-math": "3.1.0",
+    "pdf-lib": "1.17.1",
     "prismjs": "1.30.0",
     "react": "18.3.1",
     "react-dom": "18.3.1",
+    "saxes": "6.0.0",
     "zustand": "4.4.7"
   },
   "devDependencies": {

@@ -10,7 +10,6 @@ declare const styles: {
   readonly "sectionHeader": string;
   readonly "bottom": string;
   readonly "settings": string;
-  readonly "settingsIcon": string;
   readonly "settingsLabel": string;
   readonly "collapsed": string;
   readonly "collapsedGroup": string;

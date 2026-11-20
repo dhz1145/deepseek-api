@@ -139,23 +139,15 @@
   user-select: none;
   outline: none;
 
-  &:hover {
-    background-color: var(--dsw-specific-sidebar-nav-item-hover);
+  @media (hover: hover) {
+    &:hover {
+      background-color: var(--dsw-specific-sidebar-nav-item-hover);
+    }
   }
 
   &:focus-visible {
     box-shadow: inset 0 0 0 2px var(--dsw-alias-button-primary-fill);
   }
-}
-
-.settingsIcon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  color: var(--dsw-alias-label-primary);
 }
 
 .settingsLabel {
@@ -229,16 +221,6 @@
     padding: 9px 10px;
   }
 
-  .settingsIcon {
-    width: auto;
-    height: auto;
-
-    svg {
-      width: 20px;
-      height: 20px;
-    }
-  }
-
   .settingsLabel {
     margin-left: 10px;
     font-size: 16px;
@@ -310,15 +292,10 @@
 
   .settings {
     padding: 4px 0;
-  }
 
-  .settingsIcon {
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
-    background: var(--dsw-alias-bg-skeleton);
-    color: #a2a5a8;
-    overflow: hidden;
+    &:active {
+      background-color: var(--dsw-specific-sidebar-nav-item-hover);
+    }
   }
 
   .settingsLabel {

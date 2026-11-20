@@ -11,6 +11,8 @@ type AndroidBridge = {
   openSourcePage: (url: string, dark: boolean, closeLabel: string, browserLabel: string) => void
   readApiKey: () => string | null
   writeApiKey: (value: string | null) => boolean
+  readAccountProfile: () => string | null
+  writeAccountProfile: (value: string | null) => boolean
   setDarkBars: (dark: boolean) => void
   setHandlesBack: (handlesBack: boolean) => void
   setBackPreviewEnabled: (enabled: boolean) => void
@@ -42,10 +44,10 @@ const writeAndroidBlob = async (blob: Blob, append: (base64: string) => boolean)
   }
 }
 
-export const saveAndroidHistory = async (name: string, blob: Blob) => {
+export const saveAndroidHistory = async (name: string, blob: Blob): Promise<boolean> => {
   const device = android
   if (!device) {
-    return
+    return false
   }
   const status = await new Promise<string>((resolve) => {
     window.addEventListener(
@@ -56,7 +58,7 @@ export const saveAndroidHistory = async (name: string, blob: Blob) => {
     device.requestHistoryExport(name)
   })
   if (status === 'cancelled') {
-    return
+    return false
   }
   if (status !== 'ready') {
     throw new Error('Unable to open the export document')
@@ -68,6 +70,7 @@ export const saveAndroidHistory = async (name: string, blob: Blob) => {
     if (!closed) {
       throw new Error('Unable to close the export document')
     }
+    return true
   } finally {
     if (!closed) {
       device.finishHistoryExport()

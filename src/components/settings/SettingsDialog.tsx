@@ -14,7 +14,9 @@ import {
   BackupError,
   clearHistory,
   exportHistory,
+  formatImportResult,
   importHistory,
+  type ImportMode,
 } from '../../services/chat/backup.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { useChatStore } from '../../services/chat/store.js'
@@ -35,11 +37,13 @@ import { Select } from '../base/Select.js'
 import { showToast } from '../base/toastState.js'
 import { ApiKeyConfirm, ApiKeyField, useApiKeyEditor } from './ApiKeyField.js'
 import { ChatModelField } from './ChatModelField.js'
+import { ProfileIcon } from './ProfileAvatar.js'
+import { ProfileEditor } from './ProfileEditor.js'
 import { closeSettings, useSettingsDialog, type SettingsSection } from './settingsDialogState.js'
 import styles from './Settings.module.css'
 
 /**
- * 设置弹窗：分「通用设置」（主题、语言、朗读音色、位置）与「数据管理」（API Key、导入、导出、删除）。
+ * 设置弹窗：通用设置、账号管理和数据管理。
  * 桌面端为居中弹窗、左侧导航；移动端为底部弹层、导航横排在内容上方
  */
 export const SettingsDialog = () => {
@@ -53,6 +57,7 @@ const sections: { value: SettingsSection; label: TranslationKey; icon: ReactNode
     label: 'settingDialogAsideGeneralOptionLabel',
     icon: <IconSettingsOutline16 />,
   },
+  { value: 'account', label: 'accountManagement', icon: <ProfileIcon /> },
   { value: 'data', label: 'settingDialogAsideDataOptionLabel', icon: <IconDataOutline16 /> },
 ]
 
@@ -103,6 +108,8 @@ const SettingsContent = () => {
               <TtsVoiceSetting />
               <LocationSetting />
             </>
+          ) : section === 'account' ? (
+            <ProfileEditor />
           ) : (
             <>
               <ApiKeyField editor={apiKeyEditor} />
@@ -319,7 +326,7 @@ const TtsVoiceSetting = () => {
   )
 }
 
-/** 覆盖导入的二次确认，叠在设置弹窗上 */
+/** 导入方式选择与确认弹窗，叠在设置弹窗上 */
 const ImportConfirm = ({
   historyImport,
 }: {
@@ -333,16 +340,57 @@ const ImportConfirm = ({
       onClose={historyImport.cancel}
       footer={
         <>
-          <Button variant="outlined" size="m" autoFocus onClick={historyImport.cancel}>
+          <Button variant="outlined" size="m" onClick={historyImport.cancel}>
             {t('cancel')}
           </Button>
-          <Button variant="dangerOutlined" size="m" onClick={() => void historyImport.confirm()}>
-            {t('historyImportConfirm')}
+          <Button
+            variant={historyImport.mode === 'replace' ? 'dangerOutlined' : 'primary'}
+            size="m"
+            autoFocus
+            onClick={() => void historyImport.confirm()}
+          >
+            {t(
+              historyImport.mode === 'merge'
+                ? 'historyImportMergeConfirm'
+                : 'historyImportReplaceConfirm'
+            )}
           </Button>
         </>
       }
     >
-      <div className={styles.importConfirmText}>{t('historyImportConfirmDescription')}</div>
+      <div
+        className={styles.importModeList}
+        role="radiogroup"
+        aria-label={t('historyImportConfirmTitle')}
+      >
+        {(['merge', 'replace'] as const).map((option) => {
+          const selected = historyImport.mode === option
+          return (
+            <button
+              key={option}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              className={clsx(styles.importModeOption, selected && styles.importModeOptionSelected)}
+              onClick={() => historyImport.setMode(option)}
+            >
+              <span className={styles.importModeRadio} aria-hidden="true" />
+              <span className={styles.importModeText}>
+                <span className={styles.importModeTitle}>
+                  {t(option === 'merge' ? 'historyImportModeMerge' : 'historyImportModeReplace')}
+                </span>
+                <span className={styles.importModeDesc}>
+                  {t(
+                    option === 'merge'
+                      ? 'historyImportModeMergeDescription'
+                      : 'historyImportModeReplaceDescription'
+                  )}
+                </span>
+              </span>
+            </button>
+          )
+        })}
+      </div>
     </Modal>
   )
 }
@@ -441,36 +489,46 @@ const SettingCell = ({
   )
 }
 
-/** 选文件后先提示覆盖；确认后才检查文件并执行导入，任何错误都提示导入失败。 */
+/** 选文件后弹窗选择合并（默认）或覆盖；确认后才校验文件并执行导入。 */
 const useHistoryImport = () => {
   const [file, setFile] = useState<File | null>(null)
+  const [mode, setMode] = useState<ImportMode>('merge')
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState<Status>(null)
   const importing = useRef(false)
+
+  const select = (next: File) => {
+    setMode('merge')
+    setFile(next)
+  }
 
   const confirm = async () => {
     if (!file || importing.current) {
       return
     }
     importing.current = true
+    const chosenMode = mode
     setFile(null)
     setBusy(true)
     setStatus({ key: 'historyImporting' })
     try {
-      const count = await importHistory(file, setStatus)
-      setStatus({ key: count === 1 ? 'historyImportedOne' : 'historyImported', params: { count } })
-    } catch {
-      setStatus({ key: 'historyImportFailed', error: true })
+      const result = await importHistory(file, setStatus, chosenMode)
+      setStatus(formatImportResult(result))
+    } catch (error) {
+      setStatus({
+        key: error instanceof BackupError ? error.key : 'historyImportFailed',
+        error: true,
+      })
     } finally {
       importing.current = false
       setBusy(false)
     }
   }
 
-  return { file, busy, status, select: setFile, cancel: () => setFile(null), confirm }
+  return { file, mode, setMode, busy, status, select, cancel: () => setFile(null), confirm }
 }
 
-/** 导入 = 覆盖：用选中文件替换本地全部会话与附件。 */
+/** 导入历史对话：默认合并到现有记录，也可选择覆盖全部。 */
 const ImportHistory = ({
   historyImport,
   disabled,

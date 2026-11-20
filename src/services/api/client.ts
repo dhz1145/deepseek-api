@@ -1,5 +1,13 @@
+import { throwIfAborted } from '../../utils/abort.js'
 import { translate, type TranslationMessage } from '../../i18n/index.js'
 import { useSettings } from '../settings.js'
+import {
+  CHAT_API_PATHS,
+  DEFAULT_CHAT_FORMAT,
+  type ChatApiFormat,
+  type ChatConfig,
+} from './chatConfig.js'
+import { openAIRequest, readOpenAIFrame } from './openaiChat.js'
 import { readMessageEvent } from './parseEvent.js'
 import { readServerSentEvents } from './sse.js'
 import { fetchApi } from './transport.js'
@@ -10,6 +18,8 @@ import type {
   FileObject,
   FilePurpose,
   MessageStreamEvent,
+  MessageUsage,
+  StopReason,
 } from './types.js'
 
 /** 构建期 API 地址，默认 https://api.deepseek.com；本地开发支持开发服务器代理 */
@@ -37,7 +47,8 @@ export class ApiError extends Error {
   constructor(
     readonly kind: ApiErrorKind,
     message: string | TranslationMessage,
-    readonly status?: number
+    readonly status?: number,
+    readonly code?: string
   ) {
     super(typeof message === 'string' ? message : translate(message.key, message.params))
     this.name = 'ApiError'
@@ -58,15 +69,17 @@ const readErrorResponse = async (
 ): Promise<ApiError> => {
   const text = await response.text().catch(() => '')
   let message = text || fallback
+  let code: string | undefined
   try {
     const body: unknown = JSON.parse(text)
     if (isErrorBody(body)) {
       message = body.error.message
+      code = typeof body.error.code === 'string' ? body.error.code : undefined
     }
   } catch {
     // 非 JSON 响应体直接展示原文
   }
-  return new ApiError(kind, message, response.status)
+  return new ApiError(kind, message, response.status, code)
 }
 
 export const request = async (url: string, init: RequestInit): Promise<Response> => {
@@ -112,7 +125,8 @@ const anthropicHeaders = (
 export const listChatModels = async (
   apiKey: string,
   customBase: string | null,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  format: ChatApiFormat = DEFAULT_CHAT_FORMAT
 ): Promise<ChatModel[]> => {
   const url = `${customBase ?? API_ORIGIN}/models`
   const models = new Set<ChatModel>()
@@ -121,9 +135,10 @@ export const listChatModels = async (
   for (;;) {
     const response = await request(cursor ? `${url}?after_id=${encodeURIComponent(cursor)}` : url, {
       method: 'GET',
-      headers: customBase
-        ? anthropicHeaders(apiKey, false, customBase)
-        : { Authorization: `Bearer ${apiKey}` },
+      headers:
+        customBase && format === 'messages'
+          ? anthropicHeaders(apiKey, false, customBase)
+          : { Authorization: `Bearer ${apiKey}` },
       redirect: apiRedirect(customBase),
       signal,
     })
@@ -178,21 +193,30 @@ export const uploadFile = async (
 }
 
 /** DELETE /anthropic/v1/files/{file_id} */
-export const deleteFile = async (apiKey: string, fileId: string): Promise<void> => {
+export const deleteFile = async (
+  apiKey: string,
+  fileId: string,
+  signal?: AbortSignal
+): Promise<void> => {
   const customBase = getCustomApiBase(apiKey)
-  const response = await request(`${customBase ?? ANTHROPIC_BASE_URL}/files/${encodeURIComponent(fileId)}`, {
-    method: 'DELETE',
-    headers: anthropicHeaders(apiKey, true, customBase),
-    redirect: apiRedirect(customBase),
-  })
+  const response = await request(
+    `${customBase ?? ANTHROPIC_BASE_URL}/files/${encodeURIComponent(fileId)}`,
+    {
+      method: 'DELETE',
+      signal,
+      headers: anthropicHeaders(apiKey, true, customBase),
+      redirect: apiRedirect(customBase),
+    }
+  )
   await response.body?.cancel()
 }
 
 const hasFile = (body: CreateMessageRequest) =>
   body.messages.some(
     (message) =>
+      message.role === 'user' &&
       typeof message.content !== 'string' &&
-      message.content.some((block) => block.type === 'image' || block.type === 'document')
+      message.content.some((block) => block.type !== 'text' && block.source.type === 'file')
   )
 
 const openMessageStream = (
@@ -213,40 +237,50 @@ const openMessageStream = (
     signal,
   })
 
+const withDeepSeekExtensionsFallback = (
+  body: CreateMessageRequest,
+  send: (requestBody: CreateMessageRequest) => Promise<Response>
+) =>
+  send(body).catch((error: unknown) => {
+    if (
+      !(body.tools?.length || body.safety_check || body.title?.enabled) ||
+      !(error instanceof ApiError) ||
+      error.status !== 400 ||
+      !/\buser input too long, \d+ tokens exceeds max 32768 tokens\b/i.test(error.message)
+    ) {
+      throw error
+    }
+    // 扩展模式在生成前拒绝长输入时，用同一协议的基础模式发送同一上下文。
+    return send({ ...body, tools: undefined, safety_check: undefined, title: undefined })
+  })
+
 /**
  * POST /anthropic/v1/messages（stream: true），逐个产出流式事件，收到 message_stop 时结束。
  * ping、保活注释与无法解析的内容不产出；中止请求时抛出 signal 的 AbortError。
  */
-export async function* streamMessage(
+async function* streamMessage(
   apiKey: string,
+  customBase: string | null,
   body: CreateMessageRequest,
   signal: AbortSignal
-): AsyncGenerator<MessageStreamEvent> {
-  const customBase = getCustomApiBase(apiKey)
-  const response = await openMessageStream(apiKey, customBase, body, signal).catch(
-    (error: unknown) => {
-      if (
-        !(body.tools?.length || body.safety_check || body.title?.enabled) ||
-        !(error instanceof ApiError) ||
-        error.status !== 400 ||
-        !/\buser input too long, \d+ tokens exceeds max 32768 tokens\b/i.test(error.message)
-      ) {
-        throw error
-      }
-      // 扩展模式在生成前拒绝长输入时，用基础 Messages API 发送同一上下文。
-      return openMessageStream(
-        apiKey,
-        customBase,
-        { ...body, tools: undefined, safety_check: undefined, title: undefined },
-        signal
-      )
-    }
+) {
+  const response = await withDeepSeekExtensionsFallback(body, (requestBody) =>
+    openMessageStream(apiKey, customBase, requestBody, signal)
   )
+  yield* readAnthropicStream(response, signal)
+}
+
+async function* readStreamPayloads(response: Response, signal: AbortSignal) {
   const contentType = response.headers.get('Content-Type') ?? ''
-  if (!response.body || !contentType.includes('text/event-stream')) {
+  if (!response.body || !contentType.toLowerCase().includes('text/event-stream')) {
     throw await readErrorResponse(response, 'protocol', '')
   }
   for await (const { event: eventName, data } of readServerSentEvents(response.body, signal)) {
+    throwIfAborted(signal)
+    if (data === '[DONE]') {
+      yield { done: true } as const
+      return
+    }
     let payload: unknown
     try {
       payload = JSON.parse(data)
@@ -256,10 +290,32 @@ export async function* streamMessage(
       }
     }
     if (isErrorBody(payload)) {
-      throw new ApiError('stream', payload.error.message)
+      const { message, code } = payload.error
+      throw new ApiError('stream', message, undefined, typeof code === 'string' ? code : undefined)
     }
-    if (eventName === 'error') {
+    if (eventName === 'error' && !payload) {
       throw new ApiError('stream', data)
+    }
+    yield { done: false, payload, eventName, data } as const
+  }
+  throwIfAborted(signal)
+}
+
+async function* readAnthropicStream(response: Response, signal: AbortSignal) {
+  for await (const frame of readStreamPayloads(response, signal)) {
+    if (frame.done) {
+      break
+    }
+    const { payload, eventName, data } = frame
+    if (eventName === 'error') {
+      const detail = payload as { error?: { message?: unknown; type?: unknown } } | null
+      const error = detail?.error
+      throw new ApiError(
+        'stream',
+        typeof error?.message === 'string' ? error.message : data,
+        undefined,
+        typeof error?.type === 'string' ? error.type : undefined
+      )
     }
     const event = readMessageEvent(payload)
     if (!event) {
@@ -272,4 +328,111 @@ export async function* streamMessage(
   }
   // 服务端没有提供错误内容时保持为空，不推测断流原因。
   throw new ApiError('interrupted', '')
+}
+
+export const streamChatMessage = (
+  config: ChatConfig,
+  apiKey: string,
+  body: CreateMessageRequest,
+  signal: AbortSignal
+) => {
+  if (config.format === 'messages') {
+    const base = config.endpoint ? config.endpoint.slice(0, -CHAT_API_PATHS.messages.length) : null
+    return streamMessage(apiKey, base, body, signal)
+  }
+  const endpoint = config.endpoint || `${API_ORIGIN}${CHAT_API_PATHS[config.format]}`
+  return streamCompatibleMessage(endpoint, config.format, apiKey, body, signal, !config.endpoint)
+}
+
+async function* streamCompatibleMessage(
+  endpoint: string,
+  format: Exclude<ChatApiFormat, 'messages'>,
+  apiKey: string,
+  body: CreateMessageRequest,
+  signal: AbortSignal,
+  deepSeek: boolean
+): AsyncGenerator<MessageStreamEvent> {
+  throwIfAborted(signal)
+  const send = (requestBody: CreateMessageRequest) =>
+    request(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(openAIRequest(format, requestBody, deepSeek)),
+      credentials: 'omit',
+      redirect: 'error',
+      signal,
+    })
+  const response = deepSeek ? await withDeepSeekExtensionsFallback(body, send) : await send(body)
+  let block: 'text' | 'thinking' | undefined
+  let index = -1
+  let stop: StopReason | undefined
+  let usage: MessageUsage | undefined
+  let title: string | undefined
+  let complete = false
+  for await (const packet of readStreamPayloads(response, signal)) {
+    if (packet.done) {
+      complete = format === 'chat' && (index >= 0 || stop !== undefined)
+      break
+    }
+    const frame = readOpenAIFrame(format, packet.payload)
+    if (frame.error) {
+      throw new ApiError('stream', frame.error.message, undefined, frame.error.code)
+    }
+    if (packet.eventName === 'error') {
+      throw new ApiError('stream', packet.data)
+    }
+    const deltas = [
+      ['thinking', frame.thinking],
+      ['text', frame.text],
+    ] as const
+    for (const [type, delta] of deltas) {
+      if (!delta) {
+        continue
+      }
+      if (block !== type) {
+        if (block) {
+          yield { type: 'content_block_stop', index }
+        }
+        block = type
+        index += 1
+        yield {
+          type: 'content_block_start',
+          index,
+          content_block:
+            type === 'text' ? { type, text: '' } : { type, thinking: '', signature: '' },
+        }
+      }
+      yield {
+        type: 'content_block_delta',
+        index,
+        delta:
+          type === 'text'
+            ? { type: 'text_delta', text: delta }
+            : { type: 'thinking_delta', thinking: delta },
+      }
+    }
+    stop = frame.stop ?? stop
+    usage = frame.usage ?? usage
+    title = frame.title ?? title
+    if (frame.done) {
+      complete = true
+      break
+    }
+  }
+  if (!complete && !(format === 'chat' && stop)) {
+    throw new ApiError('interrupted', '')
+  }
+  if (block) {
+    yield { type: 'content_block_stop', index }
+  }
+  yield {
+    type: 'message_delta',
+    delta: { stop_reason: stop ?? 'end_turn', stop_sequence: null, title },
+    usage,
+  }
+  yield { type: 'message_stop' }
 }

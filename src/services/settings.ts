@@ -1,6 +1,13 @@
 import { create } from 'zustand'
 import { android } from '../app/android.js'
 import { parseApiAddress } from './api/address.js'
+import {
+  chatConfigFor,
+  DEFAULT_CHAT_FORMAT,
+  isChatApiFormat,
+  type ChatApiFormat,
+  type ChatConfig,
+} from './api/chatConfig.js'
 import type { TtsVoice } from './api/speech.js'
 import type { ChatModel } from './api/types.js'
 import { normalizeLocation, type UserLocation } from './location.js'
@@ -11,12 +18,19 @@ export type LocalePreference = Locale | 'system'
 /** 主题偏好；默认跟随系统 */
 export type ThemePreference = 'light' | 'dark' | 'system'
 
-/** 本机设置，存 localStorage：API Key、语言、主题、位置、朗读音色、深度思考与智能搜索开关、侧边栏收起状态 */
+type AccountProfile = {
+  username: string
+  avatar: string | null
+}
+
+/** 本机设置，Android 上的 API Key 和账号资料交给原生层存储。 */
 type Settings = {
   apiKey: string | null
   apiBaseUrl: string | null
   chatModel: ChatModel | null
   chatModels: ChatModel[] | null
+  chatConfig: ChatConfig
+  accountProfile: AccountProfile
   locale: Locale
   localePreference: LocalePreference
   themePreference: ThemePreference
@@ -34,6 +48,7 @@ type Settings = {
 const KEYS = {
   apiKey: 'chat-demo:api-key',
   chatModel: 'replica:chat-model',
+  accountProfile: 'replica:account-profile',
   locale: 'chat-demo:locale',
   location: 'chat-demo:location',
   themePreference: 'chat-demo:theme-preference',
@@ -62,8 +77,26 @@ const write = (key: string, value: string | null) => {
     } else {
       localStorage.setItem(key, value)
     }
+    return true
   } catch {
-    // 存储不可用时只在内存中生效
+    return false
+  }
+}
+
+const initialAccountProfile = (): AccountProfile => {
+  try {
+    const value = android ? android.readAccountProfile() : read(KEYS.accountProfile)
+    const profile = JSON.parse(value ?? 'null') as Partial<AccountProfile> | null
+    return {
+      username: typeof profile?.username === 'string' ? profile.username : '',
+      avatar:
+        typeof profile?.avatar === 'string' &&
+        /^data:image\/(webp|png);base64,/.test(profile.avatar)
+          ? profile.avatar
+          : null,
+    }
+  } catch {
+    return { username: '', avatar: null }
   }
 }
 
@@ -127,46 +160,58 @@ const initialTtsVoice = (): TtsVoice => (read(KEYS.ttsVoice) === 'tide' ? 'tide'
 // 地址和 Key 必须一起保存，避免重启后把自定义服务的 Key 发往官方地址。
 const CREDENTIALS_PREFIX = 'dsapi-credentials-v1:'
 
-const initialCredentials = (): Pick<Settings, 'apiKey' | 'apiBaseUrl'> => {
+const initialCredentials = (): Pick<Settings, 'apiKey' | 'apiBaseUrl' | 'chatConfig'> => {
   const saved = android ? android.readApiKey() : read(KEYS.apiKey)
   if (!saved?.startsWith(CREDENTIALS_PREFIX)) {
-    return { apiKey: saved, apiBaseUrl: null }
+    return { apiKey: saved, apiBaseUrl: null, chatConfig: chatConfigFor(null, DEFAULT_CHAT_FORMAT) }
   }
   try {
-    const value = JSON.parse(saved.slice(CREDENTIALS_PREFIX.length)) as Partial<Settings>
-    if (typeof value.apiKey === 'string' && typeof value.apiBaseUrl === 'string') {
-      const apiBaseUrl = parseApiAddress(value.apiBaseUrl)
-      if (apiBaseUrl) {
-        return { apiKey: value.apiKey, apiBaseUrl }
+    const value = JSON.parse(saved.slice(CREDENTIALS_PREFIX.length)) as {
+      apiKey?: unknown
+      apiBaseUrl?: unknown
+      format?: unknown
+    }
+    const format = value.format === undefined ? DEFAULT_CHAT_FORMAT : value.format
+    if (typeof value.apiKey === 'string' && value.apiKey && isChatApiFormat(format)) {
+      const apiBaseUrl =
+        typeof value.apiBaseUrl === 'string' ? parseApiAddress(value.apiBaseUrl, format) : null
+      if (apiBaseUrl || value.apiBaseUrl === null) {
+        return { apiKey: value.apiKey, apiBaseUrl, chatConfig: chatConfigFor(apiBaseUrl, format) }
       }
     }
   } catch {
-    // 保存的自定义配置无法恢复时，重新显示登录表单，不回退到官方服务。
+    // Invalid stored credentials cannot fall back to the official host.
   }
-  return { apiKey: null, apiBaseUrl: null }
+  return { apiKey: null, apiBaseUrl: null, chatConfig: chatConfigFor(null, DEFAULT_CHAT_FORMAT) }
 }
 
-const readChatModel = (apiBaseUrl: string | null): ChatModel | null => {
+const readChatModel = (apiBaseUrl: string | null, format: ChatApiFormat): ChatModel | null => {
   try {
-    const value = JSON.parse(read(KEYS.chatModel) ?? 'null') as Pick<
-      Settings,
-      'apiBaseUrl' | 'chatModel'
-    > | null
+    const value = JSON.parse(read(KEYS.chatModel) ?? 'null') as {
+      apiBaseUrl?: string | null
+      format?: ChatApiFormat
+      chatModel?: ChatModel
+    } | null
     if (
       value?.apiBaseUrl === apiBaseUrl &&
+      (value.format ?? DEFAULT_CHAT_FORMAT) === format &&
       typeof value.chatModel === 'string' &&
       value.chatModel
     ) {
       return value.chatModel
     }
   } catch {
-    // 旧版本或不可读的模型偏好按未配置处理。
+    // An unreadable model preference is treated as unconfigured.
   }
   return null
 }
 
-const saveChatModel = (apiBaseUrl: string | null, chatModel: ChatModel | null) => {
-  write(KEYS.chatModel, chatModel ? JSON.stringify({ apiBaseUrl, chatModel }) : null)
+const saveChatModel = (
+  apiBaseUrl: string | null,
+  format: ChatApiFormat,
+  chatModel: ChatModel | null
+) => {
+  write(KEYS.chatModel, chatModel ? JSON.stringify({ apiBaseUrl, format, chatModel }) : null)
 }
 
 const chooseChatModel = (
@@ -183,7 +228,10 @@ export const useSettings = create<Settings>(() => {
   const credentials = initialCredentials()
   return {
     ...credentials,
-    chatModel: credentials.apiKey ? readChatModel(credentials.apiBaseUrl) : null,
+    accountProfile: initialAccountProfile(),
+    chatModel: credentials.apiKey
+      ? readChatModel(credentials.apiBaseUrl, credentials.chatConfig.format)
+      : null,
     chatModels: null,
     locale: resolveLocale(initialLocalePreference()),
     localePreference: initialLocalePreference(),
@@ -199,6 +247,17 @@ export const useSettings = create<Settings>(() => {
     pinnedSessions: initialPinnedSessions(),
   }
 })
+
+export const setAccountProfile = (accountProfile: AccountProfile) => {
+  const { username, avatar } = accountProfile
+  const value = username || avatar ? JSON.stringify(accountProfile) : null
+  const persisted = android ? android.writeAccountProfile(value) : write(KEYS.accountProfile, value)
+  if (!persisted) {
+    return false
+  }
+  useSettings.setState({ accountProfile })
+  return true
+}
 
 export const setPinnedSessions = (pinnedSessions: string[]) => {
   write(KEYS.pinnedSessions, JSON.stringify(pinnedSessions))
@@ -242,41 +301,62 @@ export const setAutoRead = (autoRead: boolean) => {
 export const setApiKey = (
   apiKey: string | null,
   address = useSettings.getState().apiBaseUrl,
-  chatModels: ChatModel[] | null = null
+  chatModels: ChatModel[] | null = null,
+  format = useSettings.getState().chatConfig.format
 ) => {
   const apiBaseUrl = apiKey ? address : null
-  const saved = apiBaseUrl ? CREDENTIALS_PREFIX + JSON.stringify({ apiKey, apiBaseUrl }) : apiKey
+  const selectedFormat = apiKey ? format : DEFAULT_CHAT_FORMAT
+  const chatConfig = chatConfigFor(apiBaseUrl, selectedFormat)
+  const saved =
+    apiKey && (apiBaseUrl || selectedFormat !== DEFAULT_CHAT_FORMAT)
+      ? CREDENTIALS_PREFIX + JSON.stringify({ apiKey, apiBaseUrl, format: selectedFormat })
+      : apiKey
   if (android) {
     if (!android.writeApiKey(saved)) {
       return false
     }
   } else {
-    write(KEYS.apiKey, saved)
+    if (!write(KEYS.apiKey, saved)) {
+      return false
+    }
   }
-  const chatModel = apiKey ? chooseChatModel(chatModels, readChatModel(apiBaseUrl)) : null
-  saveChatModel(apiBaseUrl, chatModel)
-  useSettings.setState({ apiKey, apiBaseUrl, chatModel, chatModels: apiKey ? chatModels : null })
+  const chatModel = apiKey
+    ? chooseChatModel(chatModels, readChatModel(apiBaseUrl, selectedFormat))
+    : null
+  saveChatModel(apiBaseUrl, selectedFormat, chatModel)
+  useSettings.setState({
+    apiKey,
+    apiBaseUrl,
+    chatConfig,
+    chatModel,
+    chatModels: apiKey ? chatModels : null,
+  })
   return true
 }
 
 export const updateChatModels = (
   apiKey: string,
   apiBaseUrl: string | null,
-  chatModels: ChatModel[]
+  chatModels: ChatModel[],
+  format: ChatApiFormat
 ) => {
   const current = useSettings.getState()
-  if (current.apiKey !== apiKey || current.apiBaseUrl !== apiBaseUrl) {
+  if (
+    current.apiKey !== apiKey ||
+    current.apiBaseUrl !== apiBaseUrl ||
+    current.chatConfig.format !== format
+  ) {
     return
   }
   const chatModel = chooseChatModel(chatModels, current.chatModel)
-  saveChatModel(apiBaseUrl, chatModel)
+  saveChatModel(apiBaseUrl, format, chatModel)
   useSettings.setState({ chatModels, chatModel })
 }
 
 export const setChatModel = (chatModel: ChatModel) => {
   const current = useSettings.getState()
   if (current.apiKey && current.chatModels?.includes(chatModel)) {
-    saveChatModel(current.apiBaseUrl, chatModel)
+    saveChatModel(current.apiBaseUrl, current.chatConfig.format, chatModel)
     useSettings.setState({ chatModel })
   }
 }

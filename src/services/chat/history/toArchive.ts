@@ -197,14 +197,16 @@ const replyStatus = ({ status, stopReason }: AssistantMessage): ChatMessageStatu
   }
 }
 
-/** 最近一次请求的输入（含缓存）与输出之和，即这一条结束时的上下文 token。 */
-const contextTokens = ({ usage }: AssistantMessage) =>
-  usage
+/** 最近一次请求的输入（含缓存）与输出之和。归档要求非负安全整数，无有效用量时写 0。 */
+const contextTokens = ({ usage }: AssistantMessage) => {
+  const total = usage
     ? usage.input_tokens +
       usage.cache_creation_input_tokens +
       usage.cache_read_input_tokens +
       usage.output_tokens
     : 0
+  return Number.isSafeInteger(total) && total > 0 ? total : 0
+}
 
 /** 消息按父节点优先重新编号为 1…n，保证 parent_id 小于 id。 */
 const numberMessages = (messages: Message[]) => {
@@ -226,7 +228,11 @@ const numberMessages = (messages: Message[]) => {
   return { ordered, ids }
 }
 
-export const toSessionFile = (original: Session, exportImage: ExportImage): SessionFile => {
+export const toSessionFile = (
+  original: Session,
+  exportImage: ExportImage,
+  pinned = false
+): SessionFile => {
   const session = normalizeSession(original)
   const { ordered, ids } = numberMessages(session.messages)
   const id = (message: Message) => ids.get(message.id) ?? fail('backupInvalidBranches')
@@ -259,7 +265,7 @@ export const toSessionFile = (original: Session, exportImage: ExportImage): Sess
   return {
     id: session.id,
     title: session.title || null,
-    pinned: false,
+    pinned,
     // 格式要求非空；空会话没有消息可指向，写 0。
     current_message_id: current ? id(current) : 0,
     inserted_at: iso(session.createdAt),
@@ -271,7 +277,7 @@ export const toSessionFile = (original: Session, exportImage: ExportImage): Sess
 export const toIndexEntry = (file: SessionFile): SessionIndexEntry => ({
   id: file.id,
   title: file.title,
-  pinned: false,
+  pinned: file.pinned,
   message_count: file.messages.length,
   inserted_at: file.inserted_at,
   updated_at: file.updated_at,

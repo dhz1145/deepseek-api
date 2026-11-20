@@ -29,6 +29,7 @@
 }
 
 .form input,
+.form select,
 .form > button {
   box-sizing: border-box;
   min-width: 0;
@@ -37,7 +38,8 @@
   font: inherit;
 }
 
-.form input {
+.form input,
+.form select {
   border: 1px solid var(--dsw-alias-border-l2);
   padding: 12px 16px;
   color: inherit;

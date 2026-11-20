@@ -2,7 +2,7 @@
 
 # DeepSeek API
 
-可使用自定义 Anthropic 兼容 API 的非官方 Android 客户端
+支持自定义 Anthropic 和 OpenAI 兼容 API 的非官方 Android 客户端
 
 [![Release](https://img.shields.io/github/v/release/dhz1145/deepseek-api?style=flat-square&color=2563eb&label=Release)](https://github.com/dhz1145/deepseek-api/releases/latest)
 [![Platform](https://img.shields.io/badge/Platform-Android%2010%2B-3DDC84?style=flat-square&logo=android&logoColor=white)](https://github.com/dhz1145/deepseek-api)
@@ -24,7 +24,7 @@
 
 请前往 [GitHub Releases](https://github.com/dhz1145/deepseek-api/releases) 页面获取最新发布的 APK 文件，安装至 Android 设备即可使用。
 
-安装本仓库发布的签名 APK 后，可在「设置 → 检查更新」获取本仓库的新版本。下载后由 Android 系统确认安装；如有提示，请为 DeepSeek API 开启「允许安装未知应用」。应用不会静默安装，也不会自动推送通知。
+安装本仓库发布的签名 APK 后，应用进入前台时会自动检查本仓库的新版本，发现更新会弹窗提醒。也可以在「设置 → 检查更新」手动检查。下载后由 Android 系统确认安装；如有提示，请为 DeepSeek API 开启「允许安装未知应用」。应用不会静默安装，也不会自动推送通知。
 
 > 之前通过调试 APK 安装的版本与正式版签名不同，不能直接覆盖。请先在旧版导出聊天记录，卸载旧版，再安装正式版。卸载会清除本地设置，API Key 需重新输入。
 
@@ -34,7 +34,7 @@
 
 1. 安装并打开应用，点击左上角抽屉菜单进入「设置」。
 2. Android 首次启动时，填写 API Key；「请求地址」可留空，默认使用 DeepSeek 官方 API：聊天发往 `https://api.deepseek.com/anthropic/v1/messages`，校验 Key 和加载模型使用 `https://api.deepseek.com/models`。
-   如需自定义，可填写 Anthropic 兼容 HTTPS 基础地址（如 `https://example.com/anthropic`）或完整的 `/v1/messages` 地址。应用使用同一基础路径的 `/v1/models` 校验 Key，沿用原有 Messages 请求格式、模型和 DeepSeek 扩展。Android 通过原生网络层发出 HTTPS 请求，不需要服务端放行 WebView 跨域访问，也不跟随 API 重定向。附件和语音仍需要服务端支持对应接口，不会回退到官方服务。初始化后可在「设置 → 账号管理」点击 API Key 行的箭头编辑。地址框会显示当前自定义地址：不修改则保留，清空并保存则切回官方接口。保存时需要输入对应服务的 API Key。
+   在请求地址上方可选 Anthropic Messages（默认）、OpenAI Chat Completions 或 OpenAI Responses。留空仍走官方 DeepSeek，并使用所选协议。自定义服务可填写 HTTPS 基础地址（如 `https://example.com/v1`），也可贴同协议的完整接口地址。应用向同一服务请求 `/models` 校验 Key 并读取可用模型。Android 通过原生网络层发出 HTTPS 请求，不需要服务端放行 WebView 跨域访问，也不跟随 API 重定向。附件和语音仍需要服务端支持对应接口，不会回退到官方服务。初始化后可在「设置 → 账号管理」点击 API Key 行的箭头编辑。地址框会显示当前自定义地址：不修改则保留，清空并保存则切回官方接口。保存时需要输入对应服务的 API Key。
 3. 模型列表由当前 API 服务提供，可在「设置 → 账号管理」切换。首次连接时，服务返回多个模型就先选择；只有一个则自动选中。选择会保存在本机。
 
 ---
@@ -79,7 +79,7 @@ pnpm install
 pwsh -File scripts/publish-release.ps1 -Notes '填写本次更新说明'
 ```
 
-脚本先生成并检查正式签名 APK，再通过 Git 推送 `main` 和版本标签，并将 `deepseek-api-v<版本>.apk` 发布到本仓库的 GitHub Releases。仅推送源码或创建标签不会向应用提供更新。用户点击「检查更新」时，应用读取本仓库最新正式 Release；草稿或预发行版本不作为更新。
+脚本先生成并检查正式签名 APK，再通过 Git 推送 `main` 和版本标签，并将 `deepseek-api-v<版本>.apk` 发布到本仓库的 GitHub Releases。仅推送源码或创建标签不会向应用提供更新。Android 应用启动或重新进入前台时会检查本仓库的最新正式 Release，发现新版才弹窗，也可以从设置手动检查。草稿或预发行版本不作为更新。下载后会校验文件和签名，最后由系统安装器询问是否安装。
 
 ### 低版本 Android 回归
 

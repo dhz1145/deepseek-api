@@ -258,7 +258,7 @@ export const readSessionIndex: Read<SessionIndexEntry[]> = list((value) => {
   return {
     id: sessionId(item.id),
     title: nullable(string)(item.title),
-    pinned: false,
+    pinned: 'pinned' in item ? boolean(item.pinned) : false,
     message_count: count(item.message_count),
     inserted_at: time(item.inserted_at),
     updated_at: time(item.updated_at),
@@ -270,7 +270,7 @@ export const readSessionFile: Read<ParsedSessionFile> = (value) => {
   return {
     id: sessionId(item.id),
     title: nullable(string)(item.title),
-    pinned: false,
+    pinned: 'pinned' in item ? boolean(item.pinned) : false,
     current_message_id: count(item.current_message_id),
     createdAt: timestamp(item.inserted_at),
     updatedAt: timestamp(item.updated_at),

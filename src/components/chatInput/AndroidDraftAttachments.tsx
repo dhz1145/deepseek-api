@@ -17,6 +17,7 @@ export const AndroidDraftAttachments = ({
   items,
   suggestions,
   loading,
+  localOnly,
   canSend,
   onRetry,
   onRemove,
@@ -26,6 +27,7 @@ export const AndroidDraftAttachments = ({
   items: DraftAttachment[]
   suggestions: boolean
   loading: boolean
+  localOnly: boolean
   canSend: boolean
   onRetry: (id: string) => void
   onRemove: (id: string) => void
@@ -82,6 +84,7 @@ export const AndroidDraftAttachments = ({
         <DraftAttachments
           items={displayed}
           exiting={items.length === 0}
+          localOnly={localOnly}
           onRetry={onRetry}
           onRemove={onRemove}
           onPreview={onPreview}

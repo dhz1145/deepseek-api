@@ -247,7 +247,8 @@
     border-color: var(--dsw-alias-brand-primary);
   }
 
-  input {
+  input,
+  select {
     flex: 1;
     min-width: 0;
     height: 100%;
@@ -412,8 +413,70 @@
   padding-bottom: 24px;
 }
 
-.importConfirmText {
+.importModeList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.importModeOption {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background-color: transparent;
   color: var(--dsw-alias-label-primary);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  outline: none;
+  transition: background-color var(--ds-transition-duration) var(--ds-ease-in-out);
+
+  &:hover,
+  &.importModeOptionSelected {
+    background-color: var(--dsw-specific-selector);
+  }
+
+  &:focus-visible {
+    box-shadow: 0 0 0 2px var(--dsw-alias-button-primary-fill);
+  }
+}
+
+.importModeRadio {
+  box-sizing: border-box;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-top: 3px;
+  border: 2px solid var(--dsw-alias-label-tertiary);
+  border-radius: 50%;
+}
+
+.importModeOptionSelected .importModeRadio {
+  border-color: var(--dsw-alias-brand-text);
+  background: radial-gradient(circle, var(--dsw-alias-brand-text) 52%, transparent 55%);
+}
+
+.importModeText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.importModeTitle {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+}
+
+.importModeDesc {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
 }
 
 .deleteConfirm {

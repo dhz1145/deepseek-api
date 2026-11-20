@@ -1,18 +1,19 @@
 import type { TranslationKey } from '../../../i18n/index.js'
-import type { SessionSummary } from '../types.js'
 import { BackupError } from './errors.js'
-import type { ArchiveProgress } from './importArchive.js'
+import type { ArchiveProgress, ImportArchiveResult, ImportMode } from './importArchive.js'
 
-export type ImportRequest = { file: File; importId: string }
+export type { ImportArchiveResult, ImportMode } from './importArchive.js'
+
+export type ImportRequest = { file: File; importId: string; mode: ImportMode }
 export type ImportResponse =
   | { type: 'ready'; supported: boolean }
   | { type: 'unavailable' }
   | { type: 'progress'; value: ArchiveProgress }
-  | { type: 'done'; summaries: SessionSummary[] }
+  | { type: 'done'; result: ImportArchiveResult }
   | { type: 'error'; key?: TranslationKey; message: string }
 
 const runInWorker = (request: ImportRequest, onProgress: (progress: ArchiveProgress) => void) =>
-  new Promise<SessionSummary[] | undefined>((resolve, reject) => {
+  new Promise<ImportArchiveResult | undefined>((resolve, reject) => {
     let worker: Worker
     try {
       worker = new Worker(
@@ -70,7 +71,7 @@ const runInWorker = (request: ImportRequest, onProgress: (progress: ArchiveProgr
           return
         case 'done':
           close()
-          resolve(data.summaries)
+          resolve(data.result)
           return
         case 'error':
           close()
@@ -82,13 +83,14 @@ const runInWorker = (request: ImportRequest, onProgress: (progress: ArchiveProgr
 export const importOffMainThread = async (
   file: File,
   importId: string,
-  onProgress: (progress: ArchiveProgress) => void
-) => {
-  const summaries = await runInWorker({ file, importId }, onProgress)
-  if (summaries) {
-    return summaries
+  onProgress: (progress: ArchiveProgress) => void,
+  mode: ImportMode = 'replace'
+): Promise<ImportArchiveResult> => {
+  const result = await runInWorker({ file, importId, mode }, onProgress)
+  if (result) {
+    return result
   }
   // 老版本 WebView 可能不支持加载本地 Worker 或跨线程传递系统文件选择器的 File。
   const { importArchive } = await import('./importArchive.js')
-  return importArchive(file, importId, onProgress)
+  return importArchive(file, importId, onProgress, mode)
 }

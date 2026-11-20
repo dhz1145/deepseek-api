@@ -3,6 +3,7 @@ import { IconEditOutline16 } from '../base/icons.js'
 import { useSettings } from '../../services/settings.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { IconButton } from '../base/IconButton.js'
+import { ApiProtocolSelect } from './ApiProtocolSelect.js'
 import { useApiKeyForm } from './useApiKeyForm.js'
 import { useTranslate } from '../../i18n/index.js'
 import styles from './Settings.module.css'
@@ -50,6 +51,13 @@ export const ApiKeyField = ({ editor }: { editor: ApiKeyEditor }) => {
         ) : null}
         {showInput ? (
           <>
+            <div className={styles.apiKeyInput}>
+              <ApiProtocolSelect
+                value={form.format}
+                onChange={form.setFormat}
+                disabled={form.verifying}
+              />
+            </div>
             <div className={styles.apiKeyInput}>
               <input
                 aria-label={t('apiAddress')}

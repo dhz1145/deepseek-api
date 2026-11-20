@@ -7,8 +7,13 @@ const send = (response: ImportResponse) => globalThis.postMessage(response)
 globalThis.addEventListener(
   'message',
   ({ data }: MessageEvent<ImportRequest>) => {
-    void importArchive(data.file, data.importId, (value) => send({ type: 'progress', value })).then(
-      (summaries) => send({ type: 'done', summaries }),
+    void importArchive(
+      data.file,
+      data.importId,
+      (value) => send({ type: 'progress', value }),
+      data.mode
+    ).then(
+      (result) => send({ type: 'done', result }),
       (error: unknown) => {
         if (error instanceof ArchiveSourceError) {
           send({ type: 'unavailable' })

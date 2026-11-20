@@ -56,13 +56,22 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const t = useTranslate()
   const draft = useDrafts((state) => state.drafts.get(sessionId) ?? EMPTY_DRAFT)
   const { text, attachments } = draft
+  const customEndpoint = useSettings((state) =>
+    Boolean(state.apiBaseUrl && state.chatConfig.format !== 'messages')
+  )
+  const apiKey = useSettings((state) => state.apiKey)
+  const uploadKey = customEndpoint ? null : apiKey
   const setText = (value: string) => setDraftText(sessionId, value)
-  const draftReady = useUploads((state) => prepareDraftMessage(draft, state.tasks) !== null)
-  const imagesUploading = useUploads((state) =>
-    attachments.some(
-      (item) =>
-        item.isImage && (!state.tasks[item.id] || state.tasks[item.id].status === 'uploading')
-    )
+  const draftReady = useUploads(
+    (state) => prepareDraftMessage(draft, state.tasks, customEndpoint) !== null
+  )
+  const imagesUploading = useUploads(
+    (state) =>
+      !customEndpoint &&
+      attachments.some(
+        (item) =>
+          item.isImage && (!state.tasks[item.id] || state.tasks[item.id].status === 'uploading')
+      )
   )
   const streaming = useChatStore(
     (state) => sessionId !== null && Object.hasOwn(state.streaming, sessionId)
@@ -81,6 +90,23 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const [typing, setTyping] = useState(false)
   const sendSpoken = useRef(false)
 
+  useEffect(() => {
+    if (!uploadKey) {
+      return
+    }
+    for (const { id } of attachments) {
+      if (!useUploads.getState().tasks[id]) {
+        retryDraftAttachment(sessionId, id, uploadKey)
+      }
+    }
+  }, [attachments, sessionId, uploadKey])
+
+  useEffect(() => {
+    if (!apiKey) {
+      useVoiceMode.setState({ enabled: false })
+    }
+  }, [apiKey])
+
   useLayoutEffect(() => {
     const toggles = togglesRef.current
     if (!toggles) {
@@ -96,29 +122,24 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
     const observer = new ResizeObserver(updateLabels)
     observer.observe(toggles)
     return () => observer.disconnect()
-  }, [t])
+  }, [customEndpoint, t])
 
   const acceptFiles = (files: File[], recentPhotoId?: string) => {
     if (files.length === 0 || useChatStore.getState().importingHistory || !ensureApiKey()) {
       return
     }
-    const error = addDraftFiles(
-      sessionId,
-      files,
-      useSettings.getState().apiKey ?? '',
-      recentPhotoId
-    )
+    const error = addDraftFiles(sessionId, files, uploadKey, recentPhotoId)
     if (error) {
       showToast(error)
     }
   }
   const retryFile = useCallback(
     (id: string) => {
-      if (!useChatStore.getState().importingHistory && ensureApiKey()) {
-        retryDraftAttachment(sessionId, id, useSettings.getState().apiKey ?? '')
+      if (!useChatStore.getState().importingHistory && uploadKey && ensureApiKey()) {
+        retryDraftAttachment(sessionId, id, uploadKey)
       }
     },
-    [sessionId]
+    [sessionId, uploadKey]
   )
   const removeFile = useCallback(
     (id: string) => {
@@ -219,7 +240,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
     if (
       useChatStore.getState().importingHistory ||
       voice.status !== 'idle' ||
-      !prepareDraftMessage(getDraft(sessionId), useUploads.getState().tasks)
+      !prepareDraftMessage(getDraft(sessionId), useUploads.getState().tasks, customEndpoint)
     ) {
       return
     }
@@ -256,6 +277,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
             items={attachments}
             suggestions={!text.trim() && attachments.some((item) => item.isImage)}
             loading={imagesUploading}
+            localOnly={customEndpoint}
             canSend={canSend}
             onRetry={retryFile}
             onRemove={removeFile}
@@ -272,7 +294,12 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
             }}
           />
         ) : (
-          <DraftAttachments items={attachments} onRetry={retryFile} onRemove={removeFile} />
+          <DraftAttachments
+            items={attachments}
+            localOnly={customEndpoint}
+            onRetry={retryFile}
+            onRemove={removeFile}
+          />
         )}
         <div className={styles.textareaWrapper}>
           {android && voiceMode ? (
@@ -360,30 +387,34 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
         <div className={styles.functionRow}>
           {/* 深度思考 / 智能搜索开关，tooltip 在按钮上方 */}
           <div ref={togglesRef} className={styles.toggles}>
-            <Tooltip content={t('deactivatedThinkTooltip')}>
-              <button
-                type="button"
-                className={clsx(styles.toggle, thinking && styles.selected)}
-                aria-label={t('thinkingSwitch')}
-                aria-pressed={thinking}
-                onClick={() => setThinking(!thinking)}
-              >
-                <IconThinkOutline14 />
-                <span className={styles.toggleLabel}>{t('thinkingSwitch')}</span>
-              </button>
-            </Tooltip>
-            <Tooltip content={t('deactivatedSearchTooltip')}>
-              <button
-                type="button"
-                className={clsx(styles.toggle, search && styles.selected)}
-                aria-label={t('search')}
-                aria-pressed={search}
-                onClick={() => setSearch(!search)}
-              >
-                <IconGlobeLanguageOutline14 />
-                <span className={styles.toggleLabel}>{t('search')}</span>
-              </button>
-            </Tooltip>
+            {customEndpoint ? null : (
+              <>
+                <Tooltip content={t('deactivatedThinkTooltip')}>
+                  <button
+                    type="button"
+                    className={clsx(styles.toggle, thinking && styles.selected)}
+                    aria-label={t('thinkingSwitch')}
+                    aria-pressed={thinking}
+                    onClick={() => setThinking(!thinking)}
+                  >
+                    <IconThinkOutline14 />
+                    <span className={styles.toggleLabel}>{t('thinkingSwitch')}</span>
+                  </button>
+                </Tooltip>
+                <Tooltip content={t('deactivatedSearchTooltip')}>
+                  <button
+                    type="button"
+                    className={clsx(styles.toggle, search && styles.selected)}
+                    aria-label={t('search')}
+                    aria-pressed={search}
+                    onClick={() => setSearch(!search)}
+                  >
+                    <IconGlobeLanguageOutline14 />
+                    <span className={styles.toggleLabel}>{t('search')}</span>
+                  </button>
+                </Tooltip>
+              </>
+            )}
           </div>
           <div className={styles.right}>
             {android ? (
@@ -408,6 +439,9 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
                     aria-label={t(voiceMode ? 'androidTextMode' : 'voiceInput')}
                     aria-pressed={voiceMode}
                     onClick={() => {
+                      if (!voiceMode && !ensureApiKey()) {
+                        return
+                      }
                       voice.cancel()
                       useVoiceMode.setState({ enabled: !voiceMode })
                     }}
@@ -510,12 +544,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
           source={preview.previewUrl}
           onClose={() => setPreviewId(undefined)}
           onConfirm={(file) => {
-            const error = replaceDraftImage(
-              sessionId,
-              preview.id,
-              file,
-              useSettings.getState().apiKey ?? ''
-            )
+            const error = replaceDraftImage(sessionId, preview.id, file, uploadKey)
             if (!error) {
               setPreviewId(undefined)
               focusComposer()

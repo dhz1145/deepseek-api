@@ -1,5 +1,5 @@
 import { stagingWriter, type StoredFile } from '../db.js'
-import type { Session } from '../types.js'
+import type { Session, SessionSummary } from '../types.js'
 import { BackupError, fail } from './errors.js'
 import type { SessionIndexEntry } from './format.js'
 import { INDEX_PATH, MANIFEST_PATH, USER_PATH, parseSessionPath, sessionFilesDir } from './paths.js'
@@ -56,6 +56,9 @@ const readJson = async (entry: ArchiveEntry, decoder: TextDecoder): Promise<unkn
 
 export type ArchiveProgress = { bytes: number; total: number; count: number } | null
 
+export type ImportMode = 'merge' | 'replace'
+export type ImportArchiveResult = { summaries: SessionSummary[]; pinnedIds: string[] }
+
 /** 第一次读取就失败时，暂存尚未写入，可以从另一个线程重试。 */
 export class ArchiveSourceError extends Error {}
 
@@ -63,12 +66,14 @@ export class ArchiveSourceError extends Error {}
  * 流式导入：manifest → user（不导入）→ 全部会话 JSON → index → 全部图片。
  * 也支持会话与图片交错排列、index 位于末尾的条目顺序。
  * 批量暂存会话和图片；图片全部读完后只读取可能需要回填 MIME 的会话。
+ * 合并模式下跳过已在当前库存在的图片写入，仍完成 ZIP 大小与 CRC 校验。
  */
 export const importArchive = async (
   file: File,
   importId: string,
-  onProgress: (progress: ArchiveProgress) => void
-) => {
+  onProgress: (progress: ArchiveProgress) => void,
+  mode: ImportMode = 'replace'
+): Promise<ImportArchiveResult> => {
   const recognized = await isZipFile(file).catch((cause: unknown) => {
     throw new ArchiveSourceError('Unable to read the history archive', { cause })
   })
@@ -76,9 +81,12 @@ export const importArchive = async (
     fail('backupUnrecognized')
   }
   const imported = new Set<string>()
+  const pinnedIds = new Set<string>()
   const images = new Map<string, string>()
-  /** 已保存的原件：文件 ID → MIME。同一图片出现在多个会话目录时只保存一次。 */
+  /** 已保存的原件或当前库已存在的原件：文件 ID → MIME。同一图片出现在多个会话目录时只处理一次。 */
   const stored = new Map<string, string>()
+  const activeFileTypes = new Map<string, string | null>()
+  const uncheckedImageIds = new Set<string>()
   const sessionsWithFiles: { id: string; size: number }[] = []
   let sessions: Session[] = []
   let files: StoredFile[] = []
@@ -143,6 +151,22 @@ export const importArchive = async (
       await skipEntry(entry)
       return
     }
+    if (mode === 'merge') {
+      if (!activeFileTypes.has(id)) {
+        uncheckedImageIds.add(id)
+        const activeTypes = await staging.getActiveFileTypes([...uncheckedImageIds])
+        for (const uncheckedId of uncheckedImageIds) {
+          activeFileTypes.set(uncheckedId, activeTypes.get(uncheckedId) ?? null)
+        }
+        uncheckedImageIds.clear()
+      }
+      const existingType = activeFileTypes.get(id)
+      if (existingType !== null && existingType !== undefined) {
+        stored.set(id, existingType)
+        await skipEntry(entry)
+        return
+      }
+    }
     const blob = await readEntry(entry, imageType)
     files.push({ id, blob })
     fileBytes += blob.size
@@ -170,14 +194,21 @@ export const importArchive = async (
           await flushSessions()
           await waitForSessions()
         }
-        const local = toLocalSession(readSessionFile(await readJson(entry, decoder)))
+        const parsed = readSessionFile(await readJson(entry, decoder))
+        const local = toLocalSession(parsed)
         if (local.session.id !== sessionId || imported.has(sessionId)) {
           fail('backupIncomplete')
         }
         imported.add(sessionId)
+        if (parsed.pinned) {
+          pinnedIds.add(sessionId)
+        }
         currentSessionId = sessionId
         for (const [imagePath, id] of local.images) {
           images.set(imagePath, id)
+          if (mode === 'merge' && !activeFileTypes.has(id)) {
+            uncheckedImageIds.add(id)
+          }
         }
         if (
           local.session.messages.some((message) => message.role === 'user' && message.files.length)
@@ -191,6 +222,11 @@ export const importArchive = async (
         }
       } else if (path === INDEX_PATH && !index) {
         index = readSessionIndex(await readJson(entry, decoder))
+        for (const item of index) {
+          if (item.pinned) {
+            pinnedIds.add(item.id)
+          }
+        }
       } else if (
         index
           ? imported.has(/^chat_sessions\/([^/]+)_files\//.exec(path)?.[1] ?? '')
@@ -241,5 +277,5 @@ export const importArchive = async (
       await staging.updateFileTypes(ids, stored)
     }
   }
-  return staging.summaries
+  return { summaries: staging.summaries, pinnedIds: [...pinnedIds] }
 }

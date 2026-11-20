@@ -63,7 +63,7 @@ const upload = (attachment: DraftAttachment, apiKey: string) => {
 export const addDraftFiles = (
   sessionId: string | null,
   files: File[],
-  apiKey: string,
+  apiKey: string | null,
   recentPhotoId?: string
 ): TranslationMessage | null => {
   if (files.length === 0) {
@@ -84,17 +84,19 @@ export const addDraftFiles = (
     }
   })
   updateDraft(sessionId, (draft) => ({ ...draft, attachments: [...draft.attachments, ...added] }))
-  added.forEach((attachment) => upload(attachment, apiKey))
+  if (apiKey !== null) {
+    added.forEach((attachment) => upload(attachment, apiKey))
+  }
   return null
 }
 
 export const retryDraftAttachment = (
   sessionId: string | null,
   attachmentId: string,
-  apiKey: string
+  apiKey: string | null
 ) => {
   const attachment = getDraft(sessionId).attachments.find((item) => item.id === attachmentId)
-  if (attachment) {
+  if (attachment && apiKey !== null) {
     upload(attachment, apiKey)
   }
 }
@@ -103,7 +105,7 @@ export const replaceDraftImage = (
   sessionId: string | null,
   attachmentId: string,
   file: File,
-  apiKey: string
+  apiKey: string | null
 ): TranslationMessage | null => {
   const { attachments } = getDraft(sessionId)
   const original = attachments.find((item) => item.id === attachmentId && item.isImage)
@@ -126,26 +128,33 @@ export const replaceDraftImage = (
     attachments: draft.attachments.map((item) => (item === original ? replacement : item)),
   }))
   releaseAttachment(original, true)
-  upload(replacement, apiKey)
+  if (apiKey !== null) {
+    upload(replacement, apiKey)
+  }
   return null
 }
 
 /** 发送按钮和实际提交共用规则：有内容，且全部附件已上传成功。 */
-export const prepareDraftMessage = (draft: Draft, tasks: Record<string, UploadTask>) => {
+export const prepareDraftMessage = (
+  draft: Draft,
+  tasks: Record<string, UploadTask>,
+  localOnly = false
+) => {
   const text = draft.text.trim()
   if (!text && draft.attachments.length === 0) {
     return null
   }
-  const files: (FileAttachment & { serverId: string; blob: Blob })[] = []
+  const files: (FileAttachment & { blob: Blob })[] = []
   for (const attachment of draft.attachments) {
-    const task = tasks[attachment.id]
-    if (task?.status !== 'done' || !task.serverId) {
+    const task = localOnly ? undefined : tasks[attachment.id]
+    const uploaded = task?.status === 'done' ? task : undefined
+    if (!localOnly && !uploaded?.serverId) {
       return null
     }
     files.push({
       id: attachment.id,
-      serverId: task.serverId,
-      serverImage: task.serverImage,
+      serverId: uploaded?.serverId ?? null,
+      serverImage: uploaded?.serverImage,
       name: attachment.file.name,
       size: attachment.file.size,
       isImage: attachment.isImage,
@@ -178,8 +187,8 @@ export const removeDraftAttachment = (sessionId: string | null, attachmentId: st
 }
 
 /** 发送成功后原件与 serverId 已交给会话，释放预览但保留上传完成态。 */
-export const clearSentDraft = (sessionId: string | null) => {
-  getDraft(sessionId).attachments.forEach((attachment) => releaseAttachment(attachment, false))
+export const clearSentDraft = (sessionId: string | null, localOnly = false) => {
+  getDraft(sessionId).attachments.forEach((attachment) => releaseAttachment(attachment, localOnly))
   updateDraft(sessionId, () => EMPTY_DRAFT)
 }
 

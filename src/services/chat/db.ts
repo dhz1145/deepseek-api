@@ -1,5 +1,6 @@
 import { openDB, type DBSchema, type IDBPDatabase, type IDBPTransaction } from 'idb'
 import { createId } from '../../utils/id.js'
+import { mergeSessions } from './history/mergeSessions.js'
 import { toSessionSummary, type Session, type SessionSummary } from './types.js'
 
 /** IndexedDB 存储结构版本；新增或调整存储、索引时递增。 */
@@ -336,6 +337,32 @@ export const stagingWriter = (importId: string) => {
   const summaries: SessionSummary[] = []
   return {
     summaries,
+    async getActiveFileTypes(ids: string[]) {
+      const result = new Map<string, string>()
+      if (ids.length === 0) {
+        return result
+      }
+      const unique = [...new Set(ids)]
+      await withHistory(
+        'readonly',
+        async (tx, state) => {
+          if (state.importId !== importId) {
+            throw new Error('History import was replaced by another import')
+          }
+          const store = tx.objectStore(slots[state.slot].files)
+          await Promise.all(
+            unique.map(async (id) => {
+              const file = await store.get(id)
+              if (file) {
+                result.set(id, file.blob.type)
+              }
+            })
+          )
+        },
+        ['historyState', 'files', 'filesStaging']
+      )
+      return result
+    },
     async addSessions(sessions: Session[]) {
       const batch = sessions.map(storedSummary)
       await withStaging(importId, async (tx, slot) => {
@@ -389,6 +416,18 @@ export const stagingWriter = (importId: string) => {
   }
 }
 
+export type MergeCommitResult = {
+  summaries: SessionSummary[]
+  added: number
+  merged: number
+  unchanged: number
+  updatedIds: string[]
+}
+
+const MERGE_FILE_BATCH_SIZE = 8
+const MERGE_ADD_BATCH_SIZE = 32
+const MERGE_OVERLAP_BATCH_SIZE = 16
+
 /** 两组存储轮流使用，界面线程拥有提交和清理权限。 */
 export const beginStaging = async () => {
   const importId = createId()
@@ -412,6 +451,226 @@ export const beginStaging = async () => {
       })
       if (clearInBackground) {
         scheduleRetiredCleanup()
+      }
+    },
+    async commitMerge({
+      localOverrides,
+      clearInBackground = false,
+    }: {
+      localOverrides?: ReadonlyMap<string, { session: Session; files?: StoredFile[] }>
+      clearInBackground?: boolean
+    } = {}): Promise<MergeCommitResult> {
+      const { activeSummaryMap, existingFileIds, stagedSessionIds, stagedFileIds } =
+        await withHistory('readonly', async (tx, state) => {
+          if (state.importId !== importId) {
+            throw new Error('History import was replaced by another import')
+          }
+          const active = slots[state.slot]
+          const staged = slots[inactiveSlot(state.slot)]
+          const [activeSummaries, existingKeys, sessionKeys, fileKeys] = await Promise.all([
+            tx.objectStore(active.summaries).getAll(),
+            tx.objectStore(active.files).getAllKeys(),
+            tx.objectStore(staged.summaries).getAllKeys(),
+            tx.objectStore(staged.files).getAllKeys(),
+          ])
+          return {
+            activeSummaryMap: new Map(activeSummaries.map((item) => [item.id, item])),
+            existingFileIds: new Set(existingKeys),
+            stagedSessionIds: sessionKeys,
+            stagedFileIds: fileKeys,
+          }
+        })
+
+      const missingFileIds = stagedFileIds.filter((id) => !existingFileIds.has(id))
+      for (let i = 0; i < missingFileIds.length; i += MERGE_FILE_BATCH_SIZE) {
+        const batch = missingFileIds.slice(i, i + MERGE_FILE_BATCH_SIZE)
+        await withStaging(importId, async (tx, slot) => {
+          const activeFiles = tx.objectStore(slots[slot].files)
+          const stagedFiles = tx.objectStore(slots[inactiveSlot(slot)].files)
+          await Promise.all(
+            batch.map(async (id) => {
+              if ((await activeFiles.getKey(id)) === undefined) {
+                const file = await stagedFiles.get(id)
+                if (file) {
+                  await activeFiles.put(file)
+                }
+              }
+            })
+          )
+        })
+      }
+
+      const newIds: string[] = []
+      const overlapIds: string[] = []
+      for (const id of stagedSessionIds) {
+        if (activeSummaryMap.has(id) || localOverrides?.has(id)) {
+          overlapIds.push(id)
+        } else {
+          newIds.push(id)
+        }
+      }
+
+      const overrideFiles = overlapIds.flatMap((id) => localOverrides?.get(id)?.files ?? [])
+      for (let i = 0; i < overrideFiles.length; i += MERGE_FILE_BATCH_SIZE) {
+        const batch = overrideFiles.slice(i, i + MERGE_FILE_BATCH_SIZE)
+        await withStaging(importId, async (tx, slot) => {
+          const activeFiles = tx.objectStore(slots[slot].files)
+          await Promise.all(batch.map((file) => activeFiles.put(file)))
+        })
+      }
+
+      let added = 0
+      let merged = 0
+      let unchanged = 0
+      const updatedIds: string[] = []
+
+      for (let i = 0; i < newIds.length; i += MERGE_ADD_BATCH_SIZE) {
+        const batch = newIds.slice(i, i + MERGE_ADD_BATCH_SIZE)
+        await withStaging(importId, async (tx, slot) => {
+          const active = slots[slot]
+          const staged = slots[inactiveSlot(slot)]
+          const activeSessions = tx.objectStore(active.sessions)
+          const activeSummaries = tx.objectStore(active.summaries)
+          const activeFiles = tx.objectStore(active.files)
+          const stagedSessions = tx.objectStore(staged.sessions)
+          await Promise.all(
+            batch.map(async (id) => {
+              const incoming = await stagedSessions.get(id)
+              if (!incoming) {
+                throw new Error(`Staged session disappeared: ${id}`)
+              }
+              const missingMimeIds = new Set<string>()
+              for (const message of incoming.messages) {
+                if (message.role === 'user') {
+                  for (const file of message.files) {
+                    if (file.isImage && !file.mimeType) {
+                      missingMimeIds.add(file.id)
+                    }
+                  }
+                }
+              }
+              if (missingMimeIds.size > 0) {
+                const fileTypes = new Map<string, string>()
+                await Promise.all(
+                  [...missingMimeIds].map(async (fileId) => {
+                    const file = await activeFiles.get(fileId)
+                    if (file?.blob.type) {
+                      fileTypes.set(fileId, file.blob.type)
+                    }
+                  })
+                )
+                if (fileTypes.size > 0) {
+                  for (const message of incoming.messages) {
+                    if (message.role === 'user') {
+                      for (const file of message.files) {
+                        if (!file.mimeType) {
+                          file.mimeType = fileTypes.get(file.id) ?? ''
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              const summary = storedSummary(incoming)
+              await Promise.all([activeSessions.put(incoming), activeSummaries.put(summary)])
+              activeSummaryMap.set(id, summary)
+              added += 1
+            })
+          )
+        })
+      }
+
+      for (let i = 0; i < overlapIds.length; i += MERGE_OVERLAP_BATCH_SIZE) {
+        const batch = overlapIds.slice(i, i + MERGE_OVERLAP_BATCH_SIZE)
+        await withStaging(importId, async (tx, slot) => {
+          const active = slots[slot]
+          const staged = slots[inactiveSlot(slot)]
+          const activeSessions = tx.objectStore(active.sessions)
+          const activeSummaries = tx.objectStore(active.summaries)
+          const activeFiles = tx.objectStore(active.files)
+          const stagedSessions = tx.objectStore(staged.sessions)
+          await Promise.all(
+            batch.map(async (id) => {
+              const incoming = await stagedSessions.get(id)
+              if (!incoming) {
+                throw new Error(`Staged session disappeared: ${id}`)
+              }
+              const override = localOverrides?.get(id)
+              const local = override?.session ?? (await activeSessions.get(id))
+              if (!local) {
+                const summary = storedSummary(incoming)
+                await Promise.all([activeSessions.put(incoming), activeSummaries.put(summary)])
+                activeSummaryMap.set(id, summary)
+                added += 1
+                updatedIds.push(id)
+                return
+              }
+              const neededFileIds = new Set<string>()
+              for (const session of [local, incoming]) {
+                for (const message of session.messages) {
+                  if (message.role === 'user') {
+                    for (const file of message.files) {
+                      if (!file.mimeType) {
+                        neededFileIds.add(file.id)
+                      }
+                    }
+                  }
+                }
+              }
+              const fileTypes = new Map<string, string>()
+              if (neededFileIds.size > 0) {
+                await Promise.all(
+                  [...neededFileIds].map(async (fileId) => {
+                    const stored = await activeFiles.get(fileId)
+                    if (stored?.blob.type) {
+                      fileTypes.set(fileId, stored.blob.type)
+                    }
+                  })
+                )
+              }
+              const result = mergeSessions(local, incoming, { fileTypes })
+              if (result.changed || override) {
+                const summary = storedSummary(result.session)
+                await Promise.all([
+                  activeSessions.put(result.session),
+                  activeSummaries.put(summary),
+                ])
+                activeSummaryMap.set(id, summary)
+                if (result.changed) {
+                  merged += 1
+                } else {
+                  unchanged += 1
+                }
+                updatedIds.push(id)
+              } else {
+                unchanged += 1
+              }
+            })
+          )
+        })
+      }
+
+      const backgroundCleanup =
+        clearInBackground && stagedSessionIds.length + stagedFileIds.length > CLEANUP_BATCH_SIZE
+      await withStaging(importId, async (tx, slot) => {
+        const inactive = inactiveSlot(slot)
+        if (backgroundCleanup) {
+          await tx.objectStore('historyCleanup').put({ slot: inactive, importId }, 'retired')
+        } else {
+          await clearSlot(tx, inactive)
+        }
+        await setHistoryState(tx, { slot })
+      })
+      if (backgroundCleanup) {
+        scheduleRetiredCleanup()
+      }
+
+      return {
+        summaries: [...activeSummaryMap.values()].map(toSessionSummary),
+        added,
+        merged,
+        unchanged,
+        updatedIds,
       }
     },
     async discard() {

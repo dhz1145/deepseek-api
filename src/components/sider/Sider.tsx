@@ -5,7 +5,6 @@ import { useTranslate } from '../../i18n/index.js'
 import {
   IconPanelLeftOutline16,
   IconSearchOutline16,
-  IconSettingsOutline16,
   IconCloseOutline16,
   IconEllipsisOutline16,
   IconTrashOutline16,
@@ -19,6 +18,7 @@ import { Button } from '../base/Button.js'
 import { IconButton } from '../base/IconButton.js'
 import { Modal } from '../base/Modal.js'
 import { showToast } from '../base/toastState.js'
+import { ProfileAvatar } from '../settings/ProfileAvatar.js'
 import { openSettings } from '../settings/settingsDialogState.js'
 import { closeMobileSider, useMobileSider } from './mobileSiderState.js'
 import { SessionItem } from './SessionItem.js'
@@ -33,6 +33,8 @@ export const Sider = memo(function Sider({ mobile = false }: { mobile?: boolean 
   const sessions = useChatStore((state) => state.sessions)
   const activeId = useChatStore((state) => state.activeId)
   const pinnedIds = useSettings((state) => state.pinnedSessions)
+  const profile = useSettings((state) => state.accountProfile)
+  const username = profile.username || t('profileDefaultUsername')
   const androidDrawer = Boolean(mobile && android)
   const [query, setQuery] = useState('')
   const matches = useSessionSearch(query, sessions)
@@ -287,28 +289,11 @@ export const Sider = memo(function Sider({ mobile = false }: { mobile?: boolean 
           <button
             type="button"
             className={styles.settings}
-            aria-label={t('settings')}
+            aria-label={`${username} · ${t('settings')}`}
             onClick={() => openSettings('general')}
           >
-            <span className={styles.settingsIcon}>
-              {androidDrawer ? (
-                <svg
-                  width="24"
-                  height="24"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                  aria-hidden="true"
-                >
-                  <circle cx="12" cy="8" r="4.15" />
-                  <path d="M3 23a9 7 0 0 1 18 0z" />
-                </svg>
-              ) : (
-                <IconSettingsOutline16 />
-              )}
-            </span>
-            <span className={styles.settingsLabel}>
-              {androidDrawer ? 'API Key' : t('settings')}
-            </span>
+            <ProfileAvatar src={profile.avatar} />
+            <span className={styles.settingsLabel}>{username}</span>
             {androidDrawer ? <IconEllipsisOutline16 /> : null}
           </button>
         )}

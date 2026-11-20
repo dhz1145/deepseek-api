@@ -3,6 +3,7 @@ import whale from '../../assets/deepseek-whale.svg'
 import { useTranslate } from '../../i18n/index.js'
 import { setApiKey } from '../../services/settings.js'
 import { ChatModelField } from './ChatModelField.js'
+import { ApiProtocolSelect } from './ApiProtocolSelect.js'
 import { useApiKeyForm } from './useApiKeyForm.js'
 import styles from './ApiKeyScreen.module.css'
 
@@ -42,6 +43,11 @@ export const ApiKeyScreen = ({ selectingModel = false }: { selectingModel?: bool
       >
         <img className={styles.whale} src={whale} alt="" />
         <h1>{t('apiKeyStart')}</h1>
+        <ApiProtocolSelect
+          value={form.format}
+          onChange={form.setFormat}
+          disabled={form.verifying}
+        />
         <input
           aria-label={t('apiAddress')}
           aria-invalid={Boolean(form.addressError)}

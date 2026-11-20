@@ -1,5 +1,19 @@
 import { ApiError } from './client.js'
 
+const contextOverflow =
+  /\b(?:maximum context length|context (?:window|length)(?: (?:is|was))? exceeded|exceeds? (?:the |this model.s )?(?:maximum |max )?context (?:window|length)|input[-_ ]tokens? exceed(?:s|ed)? the limit|user input too long, \d+ tokens exceeds max \d+ tokens)\b/i
+const attachmentOverflow =
+  /\b(?:too many|at most \d+) (?:documents|images)\b|\b(?:document|image) (?:count|tokens|text size|total size) (?:limit exceeded|exceeds?)\b/i
+
+/** 只匹配上下文容量错误，额度、普通 400 和生成达到 max_tokens 各自走原流程。 */
+export const isContextOverflow = (error: unknown): error is ApiError =>
+  error instanceof ApiError &&
+  (error.status === 400 || error.kind === 'stream') &&
+  (error.code === 'context_length_exceeded' ||
+    error.code === 'context_window_exceeded' ||
+    contextOverflow.test(error.message) ||
+    attachmentOverflow.test(error.message))
+
 /**
  * 接口失败的统一分类。各调用方按自己的场景给同一种情况配不同文案，
  * 例如余额不足在回答、上传、朗读里措辞不同，所以这里只归类，不生成文案。

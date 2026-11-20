@@ -1,17 +1,20 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { updateMessages, type UpdateStatus } from '../../app/updateStatus.js'
 import { android, saveAndroidHistory } from '../../app/android.js'
 import { openAndroidPage } from '../../app/openAndroidPage.js'
 import {
   subscribeToAndroidBackPreview,
   useAndroidBackInterception,
 } from '../../app/useAndroidBackInterception.js'
-import { useTranslate, type LinkedMessage, type TranslationKey } from '../../i18n/index.js'
+import { useTranslate, type LinkedMessage } from '../../i18n/index.js'
 import type { TtsVoice } from '../../services/api/speech.js'
 import {
   BackupError,
   clearHistory,
   exportHistory,
+  formatImportResult,
   importHistory,
+  type ImportMode,
 } from '../../services/chat/backup.js'
 import { useChatStore } from '../../services/chat/store.js'
 import {
@@ -42,6 +45,8 @@ import { closeMobileSider } from '../sider/mobileSiderState.js'
 import { ApiKeyConfirm, ApiKeyField, useApiKeyEditor } from './ApiKeyField.js'
 import { ChatModelField } from './ChatModelField.js'
 import { createSettingsPageMotion } from './androidSettingsMotion.js'
+import { ProfileIcon } from './ProfileAvatar.js'
+import { ProfileEditor } from './ProfileEditor.js'
 import { closeSettings, useSettingsDialog } from './settingsDialogState.js'
 import styles from './AndroidSettings.module.css'
 
@@ -52,23 +57,6 @@ const policiesUrl = 'https://cdn.deepseek.com/policies'
 const chinesePoliciesUrl = `${policiesUrl}/zh-CN`
 const faqUrl = 'https://static.deepseek.com/faq/index.html'
 const releasesUrl = 'https://github.com/dhz1145/deepseek-api/releases/latest'
-
-const updateMessages = {
-  current: 'updateCurrent',
-  checkFailed: 'updateCheckFailed',
-  downloadFailed: 'updateDownloadFailed',
-  invalidApk: 'updateInvalidApk',
-  apkMissing: 'updateApkMissing',
-  permissionDenied: 'updatePermissionDenied',
-  installerUnavailable: 'updateInstallerUnavailable',
-} satisfies Record<string, TranslationKey>
-
-type UpdateStatus = {
-  phase: 'idle' | 'checking' | 'available' | 'downloading' | 'ready'
-  version?: string
-  progress?: number
-  message?: keyof typeof updateMessages
-}
 
 type Page = 'root' | 'account' | 'data' | 'export' | 'font' | 'personalization' | 'agreements'
 type Popup = 'locale' | 'theme' | 'voice' | 'logout' | 'delete' | 'import'
@@ -82,20 +70,6 @@ const parentPage: Record<Page, Page | null> = {
   personalization: 'root',
   agreements: 'root',
 }
-
-const Profile = () => (
-  <svg
-    width="18"
-    height="18"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="1.8"
-  >
-    <circle cx="12" cy="8" r="4" />
-    <path d="M4.5 21a7.5 6 0 0 1 15 0" />
-  </svg>
-)
 
 const Info = ({ glyph = 'i' }: { glyph?: string }) => <span className={styles.info}>{glyph}</span>
 
@@ -249,7 +223,11 @@ export const AndroidSettings = ({ chatFrame }: { chatFrame: RefObject<HTMLDivEle
   const open = useSettingsDialog((state) => state.open)
   const section = useSettingsDialog((state) => state.section)
   return open ? (
-    <Settings start={section === 'data' ? 'account' : 'root'} chatFrame={chatFrame} key={section} />
+    <Settings
+      start={section === 'general' ? 'root' : 'account'}
+      chatFrame={chatFrame}
+      key={section}
+    />
   ) : null
 }
 
@@ -265,8 +243,9 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
   const [update, setUpdate] = useState<UpdateStatus>({ phase: 'idle' })
   const [updateFallback, setUpdateFallback] = useState(false)
   const [file, setFile] = useState<File | null>(null)
+  const [importMode, setImportMode] = useState<ImportMode>('merge')
   const [importStatus, setImportStatus] = useState<LinkedMessage | null>(null)
-  const [archive, setArchive] = useState<Awaited<ReturnType<typeof exportHistory>> | null>(null)
+  const [exportSavedName, setExportSavedName] = useState<string | null>(null)
   const importInput = useRef<HTMLInputElement>(null)
   const pagesRef = useRef<HTMLDivElement>(null)
   const motionRef = useRef<ReturnType<typeof createSettingsPageMotion>>()
@@ -283,7 +262,7 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
     const onUpdate = (event: Event) => {
       const status = (event as CustomEvent<UpdateStatus>).detail
       setUpdate(status)
-      if (status.message) {
+      if (status.message && !status.automatic) {
         showToast({
           key: updateMessages[status.message],
           type: status.message === 'current' ? undefined : 'error',
@@ -302,7 +281,7 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
 
   const labels: Record<Page, string> = {
     root: t('settings'),
-    account: tr('账号管理', 'Account management'),
+    account: t('accountManagement'),
     data: tr('数据管理', 'Data management'),
     export: t('exportAllLabel'),
     font: tr('字体大小', 'Text size'),
@@ -489,11 +468,8 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
         setPopup(null)
         setFile(null)
         setImportStatus({ key: 'historyImporting' })
-        const count = await importHistory(file, setImportStatus)
-        setImportStatus({
-          key: count === 1 ? 'historyImportedOne' : 'historyImported',
-          params: { count },
-        })
+        const result = await importHistory(file, setImportStatus, importMode)
+        setImportStatus(formatImportResult(result))
       } else if (popup === 'delete') {
         await clearHistory()
         showToast({ key: 'historyDeleted' })
@@ -530,7 +506,11 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
         {screen === 'root' ? (
           <>
             <Group label={tr('账户', 'Account')}>
-              <Row label={labels.account} icon={<Profile />} onClick={() => openPage('account')} />
+              <Row
+                label={labels.account}
+                icon={<ProfileIcon />}
+                onClick={() => openPage('account')}
+              />
               <Row
                 label={labels.data}
                 icon={<IconDataOutline16 />}
@@ -624,37 +604,44 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
                 onClick={() => openAndroidPage(faqUrl, { showBrowserAction: false })}
               />
             </Group>
-            <Group spaced>
-              <Row label={logout} danger arrow={false} onClick={() => setPopup('logout')} />
-            </Group>
+            {editor.apiKey ? (
+              <Group spaced>
+                <Row label={logout} danger arrow={false} onClick={() => setPopup('logout')} />
+              </Group>
+            ) : null}
           </>
         ) : null}
         {screen === 'account' ? (
-          <Group label={tr('账户', 'Account')}>
-            <Row
-              label="DeepSeek API Key"
-              icon={<Profile />}
-              value="••••••••"
-              onClick={editor.open}
-            />
-            {editor.editing ? (
+          <>
+            <Group label={tr('账户', 'Account')}>
+              <Row
+                label="DeepSeek API Key"
+                icon={<ProfileIcon />}
+                value={editor.apiKey ? '••••••••' : undefined}
+                onClick={editor.open}
+              />
+              {editor.editing ? (
+                <div className={styles.credentials}>
+                  <ApiKeyField editor={editor} />
+                  <ApiKeyConfirm editor={editor} />
+                </div>
+              ) : null}
               <div className={styles.credentials}>
-                <ApiKeyField editor={editor} />
-                <ApiKeyConfirm editor={editor} />
+                <ChatModelField />
               </div>
-            ) : null}
-            <div className={styles.credentials}>
-              <ChatModelField />
-            </div>
-            <Row
-              label={tr('开放平台', 'Open platform')}
-              href="https://platform.deepseek.com/api_keys"
-            />
-            <Row
-              label={tr('开放平台帮助', 'API help')}
-              href="https://api-docs.deepseek.com/zh-cn/"
-            />
-          </Group>
+              <Row
+                label={tr('开放平台', 'Open platform')}
+                href="https://platform.deepseek.com/api_keys"
+              />
+              <Row
+                label={tr('开放平台帮助', 'API help')}
+                href="https://api-docs.deepseek.com/zh-cn/"
+              />
+            </Group>
+            <Group>
+              <ProfileEditor />
+            </Group>
+          </>
         ) : null}
         {screen === 'data' ? (
           <>
@@ -669,7 +656,14 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
               {tr('。', '.')}
             </p>
             <Group>
-              <Row label={labels.export} disabled={busy} onClick={() => openPage('export')} />
+              <Row
+                label={labels.export}
+                disabled={busy}
+                onClick={() => {
+                  setExportSavedName(null)
+                  openPage('export')
+                }}
+              />
             </Group>
             <Group>
               <Row
@@ -696,6 +690,7 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
                   const selected = event.target.files?.[0]
                   event.target.value = ''
                   if (selected) {
+                    setImportMode('merge')
                     setFile(selected)
                     setPopup('import')
                   }
@@ -716,32 +711,36 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
           <>
             <Group>
               <Row
-                label={archive ? tr('重新导出', 'Export again') : tr('导出', 'Export')}
+                label={tr('保存到设备', 'Save to device')}
                 arrow={false}
                 disabled={busy || !sessions}
                 onClick={() =>
                   void runExportAction(async () => {
-                    setArchive(await exportHistory())
+                    setExportSavedName(null)
+                    const exported = await exportHistory()
+                    if (android) {
+                      if (await saveAndroidHistory(exported.name, exported.blob)) {
+                        setExportSavedName(exported.name)
+                      }
+                      return
+                    }
+                    const url = URL.createObjectURL(exported.blob)
+                    const link = document.createElement('a')
+                    link.href = url
+                    link.download = exported.name
+                    link.click()
+                    setTimeout(() => URL.revokeObjectURL(url), 10_000)
+                    setExportSavedName(exported.name)
                   })
                 }
               />
             </Group>
-            {archive ? (
-              <Group>
-                <Row
-                  label={tr('保存到设备', 'Save to device')}
-                  arrow={false}
-                  disabled={busy}
-                  onClick={() =>
-                    void runExportAction(() => saveAndroidHistory(archive.name, archive.blob))
-                  }
-                />
-              </Group>
-            ) : null}
             <p className={styles.caption} role="status">
               {busy
-                ? tr('正在处理归档…', 'Working on the archive…')
-                : (archive?.name ?? t(sessions ? 'historyExportDescription' : 'androidNoChats'))}
+                ? t('historyExporting')
+                : exportSavedName
+                  ? t('historyExportSaved', { name: exportSavedName })
+                  : t(sessions ? 'historyExportDescription' : 'androidNoChats')}
             </p>
           </>
         ) : null}
@@ -927,22 +926,82 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
           </section>
         </div>
       ) : null}
-      {popup === 'logout' || popup === 'delete' || popup === 'import' ? (
+      {popup === 'import' ? (
+        <div
+          className={styles.overlay}
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              back()
+            }
+          }}
+        >
+          <section
+            className={styles.choice}
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('historyImportConfirmTitle')}
+          >
+            <header>{t('historyImportConfirmTitle')}</header>
+            <div
+              className={styles.options}
+              role="radiogroup"
+              aria-label={t('historyImportConfirmTitle')}
+            >
+              <button
+                type="button"
+                role="radio"
+                aria-checked={importMode === 'merge'}
+                disabled={busy}
+                onClick={() => setImportMode('merge')}
+              >
+                {t('historyImportModeMerge')}
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={importMode === 'replace'}
+                disabled={busy}
+                onClick={() => setImportMode('replace')}
+              >
+                {t('historyImportModeReplace')}
+              </button>
+            </div>
+            <p className={styles.importDescription}>
+              {t(
+                importMode === 'merge'
+                  ? 'historyImportModeMergeDescription'
+                  : 'historyImportModeReplaceDescription'
+              )}
+            </p>
+            <div className={styles.confirmActions}>
+              <button type="button" className={styles.confirm} disabled={busy} onClick={back}>
+                {t('cancel')}
+              </button>
+              <button
+                type="button"
+                className={styles.confirm}
+                disabled={busy}
+                data-danger={importMode === 'replace'}
+                onClick={() => void confirmAction()}
+              >
+                {t(
+                  importMode === 'merge'
+                    ? 'historyImportMergeConfirm'
+                    : 'historyImportReplaceConfirm'
+                )}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+      {popup === 'logout' || popup === 'delete' ? (
         <div className={styles.overlay}>
           <section className={styles.choice} role="dialog" aria-modal="true">
-            <header>
-              {popup === 'logout'
-                ? logout
-                : popup === 'delete'
-                  ? clear
-                  : t('historyImportConfirmTitle')}
-            </header>
+            <header>{popup === 'logout' ? logout : clear}</header>
             <p className={styles.message}>
               {popup === 'logout'
                 ? tr('确认退出当前 API Key？', 'Sign out of this API Key?')
-                : popup === 'delete'
-                  ? t('deleteAllSessionsModalDescription')
-                  : t('historyImportConfirmDescription')}
+                : t('deleteAllSessionsModalDescription')}
             </p>
             <div className={styles.confirmActions}>
               <button className={styles.confirm} disabled={busy} onClick={back}>
@@ -951,10 +1010,10 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
               <button
                 className={styles.confirm}
                 disabled={busy}
-                data-danger={popup !== 'import'}
+                data-danger
                 onClick={() => void confirmAction()}
               >
-                {t(popup === 'import' ? 'historyImportConfirm' : 'confirm')}
+                {t('confirm')}
               </button>
             </div>
           </section>

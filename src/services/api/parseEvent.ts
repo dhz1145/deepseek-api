@@ -205,23 +205,30 @@ export const readMessageEvent = (value: unknown): MessageStreamEvent | null => {
         return null
       }
       break
-    case 'message_delta':
-      if (
-        !isRecord(value.delta) ||
-        !['end_turn', 'max_tokens', 'tool_use', 'refusal'].includes(
-          value.delta.stop_reason as string
-        )
-      ) {
+    case 'message_delta': {
+      if (!isRecord(value.delta)) {
+        return null
+      }
+      const reason = value.delta.stop_reason
+      const stopReason =
+        reason === 'model_context_window_exceeded' || reason === 'pause_turn'
+          ? 'max_tokens'
+          : reason === 'stop_sequence'
+            ? 'end_turn'
+            : reason
+      if (!['end_turn', 'max_tokens', 'tool_use', 'refusal'].includes(stopReason as string)) {
         return null
       }
       return {
         ...value,
         delta: {
           ...value.delta,
+          stop_reason: stopReason,
           title: isOptionalString(value.delta.title) ? value.delta.title : undefined,
         },
         usage: isUsage(value.usage) ? value.usage : undefined,
       } as MessageStreamEvent
+    }
     case 'message_stop':
       break
     default:

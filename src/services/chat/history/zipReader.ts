@@ -59,7 +59,7 @@ const updateCrc = (crc: number, bytes: Uint8Array) => {
 }
 
 // 系统文件选择器返回的 File 可能来自 content URI。复用相邻读取，避免逐个 ZIP 字段打开文档。
-const createReader = (file: File) => {
+const createReader = (file: Blob) => {
   let offset = 0
   let buffer = new Uint8Array()
   return async (start: number, length: number) => {
@@ -283,15 +283,16 @@ export type ArchiveEntry = {
  * 调用方必须消费完当前条目的数据，再请求下一个条目。
  */
 export async function* readArchive(
-  file: File,
-  onRead?: (bytes: number, total: number) => Promise<void> | undefined
+  file: Blob,
+  onRead?: (bytes: number, total: number) => Promise<void> | undefined,
+  select?: (path: string) => boolean
 ): AsyncGenerator<ArchiveEntry> {
   const readBytes = createReader(file)
   const directory = await readDirectory(file.size, readBytes)
   for (const [index, entry] of directory.entries.entries()) {
     const boundary = directory.entries[index + 1]?.offset ?? directory.offset
     const start = await readEntryOffset(readBytes, entry, boundary)
-    if (entry.path.endsWith('/')) {
+    if (entry.path.endsWith('/') || (select && !select(entry.path))) {
       continue
     }
     let completed = false

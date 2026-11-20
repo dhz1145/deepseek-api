@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { parseApiAddress } from '../../services/api/address.js'
-import { ANTHROPIC_BASE_URL, ApiError, listChatModels } from '../../services/api/client.js'
+import type { ChatApiFormat } from '../../services/api/chatConfig.js'
+import { isOfficialApiAddress, parseApiAddress } from '../../services/api/address.js'
+import { ApiError, listChatModels } from '../../services/api/client.js'
 import { classifyApiError } from '../../services/api/errors.js'
 import { setApiKey, useSettings } from '../../services/settings.js'
 import { useTranslate } from '../../i18n/index.js'
@@ -9,6 +10,7 @@ import { useTranslate } from '../../i18n/index.js'
 export const useApiKeyForm = (onSaved?: () => void) => {
   const t = useTranslate()
   const [value, setValue] = useState('')
+  const [format, setFormat] = useState(() => useSettings.getState().chatConfig.format)
   const [address, setAddress] = useState(() => useSettings.getState().apiBaseUrl ?? '')
   const [invalidAddress, setInvalidAddress] = useState(false)
   const [verifying, setVerifying] = useState(false)
@@ -36,6 +38,7 @@ export const useApiKeyForm = (onSaved?: () => void) => {
     pending.current?.abort()
     pending.current = undefined
     setValue('')
+    setFormat(useSettings.getState().chatConfig.format)
     setAddress(useSettings.getState().apiBaseUrl ?? '')
     setInvalidAddress(false)
     setVerifying(false)
@@ -51,8 +54,8 @@ export const useApiKeyForm = (onSaved?: () => void) => {
     setInvalidAddress(false)
     let apiBaseUrl: string | null
     try {
-      const parsed = parseApiAddress(address)
-      apiBaseUrl = parsed === ANTHROPIC_BASE_URL ? null : parsed
+      const parsed = parseApiAddress(address, format)
+      apiBaseUrl = isOfficialApiAddress(parsed, format) ? null : parsed
     } catch {
       setInvalidAddress(true)
       return
@@ -62,11 +65,11 @@ export const useApiKeyForm = (onSaved?: () => void) => {
     pending.current = controller
     setVerifying(true)
     try {
-      const models = await listChatModels(apiKey, apiBaseUrl, signal)
+      const models = await listChatModels(apiKey, apiBaseUrl, signal, format)
       if (signal.aborted) {
         return
       }
-      if (!setApiKey(apiKey, apiBaseUrl, models)) {
+      if (!setApiKey(apiKey, apiBaseUrl, models, format)) {
         throw new Error(t('apiKeyStorageFailed'))
       }
       setValue('')
@@ -88,6 +91,12 @@ export const useApiKeyForm = (onSaved?: () => void) => {
   return {
     value,
     setValue,
+    format,
+    setFormat: (format: ChatApiFormat) => {
+      setFormat(format)
+      setInvalidAddress(false)
+      setFailure(null)
+    },
     address,
     setAddress: (value: string) => {
       setAddress(value)

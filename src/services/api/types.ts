@@ -134,6 +134,16 @@ export type FileBlockParam = {
   source: { type: 'file'; file_id: string }
 }
 
+export type InlineFileBlockParam =
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+  | {
+      type: 'document'
+      title: string
+      source: { type: 'base64'; media_type: 'application/pdf'; data: string }
+    }
+
+export type UserBlockParam = TextBlockParam | FileBlockParam | InlineFileBlockParam
+
 /** 接口接受的调用块；历史只回传 kind 为 read_link 的调用 */
 export type ServerToolUseBlockParam = Pick<
   ServerToolUseBlock,
@@ -157,7 +167,7 @@ export type AssistantBlockParam =
 export type MessageParam =
   /** Chat Engine 扩展角色，位于对应 user 前；需服务端支持 latest_reminder。 */
   | { role: 'latest_reminder'; content: string }
-  | { role: 'user'; content: string | (FileBlockParam | TextBlockParam)[] }
+  | { role: 'user'; content: string | UserBlockParam[] }
   | { role: 'assistant'; content: AssistantBlockParam[] }
 
 /** 开启联网搜索与边想边搜 */
