@@ -39,6 +39,11 @@ def release_asset(release):
 def main(site):
     release = json.loads(subprocess.check_output(["gh", "api", f"repos/{REPOSITORY}/releases/latest"]))
     name, manifest = release_asset(release)
+    # Pages identifies deployments by commit SHA. Do not deploy an older release
+    # from the commit reserved for a newer APK before that release is published.
+    source_version = json.loads((Path(__file__).resolve().parents[1] / "package.json").read_text(encoding="utf-8"))["version"]
+    if manifest["tag"] != f"v{source_version}":
+        raise ValueError(f"Workflow source v{source_version} does not match latest Release {manifest['tag']}")
     updates = site / "updates"
     updates.mkdir(parents=True)
     apk = updates / name

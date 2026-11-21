@@ -81,7 +81,7 @@ pwsh -File scripts/publish-release.ps1 -Notes '填写本次更新说明'
 
 脚本先生成并检查正式签名 APK，再通过 Git 推送 `main` 和版本标签，并将 `deepseek-api-v<版本>.apk` 发布到本仓库的 GitHub Releases。仅推送源码或创建标签不会向应用提供更新。Android 应用启动或重新进入前台时会检查本仓库的最新正式 Release，发现新版才弹窗，也可以从设置手动检查。草稿或预发行版本不作为更新。下载后会校验文件和签名，最后由系统安装器询问是否安装。
 
-正式 Release 发布后，Actions 中的 `Publish Android update mirror` 会校验 APK 的大小及 SHA-256，再将 APK 和版本清单一起部署到本仓库的 GitHub Pages。镜像部署可能晚于 Release；部署失败可在 Actions 里从 `main` 手动重跑该工作流。仓库的 Pages 发布源须设为 GitHub Actions，`github-pages` 部署环境须允许 `main` 分支和 `v*` 版本标签。
+正式 Release 发布后，Actions 中的 `Publish Android update mirror` 会校验 APK 的大小及 SHA-256，再将 APK 和版本清单一起部署到本仓库的 GitHub Pages。镜像部署可能晚于 Release；部署失败可在 Actions 里从 `main` 手动运行该工作流（`package.json` 的版本须与最新正式 Release 一致）。仓库的 Pages 发布源须设为 GitHub Actions，`github-pages` 部署环境须允许 `main` 分支和 `v*` 版本标签。
 
 ### 低版本 Android 回归
 
