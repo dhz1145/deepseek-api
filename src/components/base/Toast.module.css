@@ -31,8 +31,27 @@
   translate: 0 -50%;
   border: 0;
   border-radius: 16px;
-  background: rgb(32 32 32 / 86%);
+  padding: 12.7px 16.5px;
+  background: #333333;
   box-shadow: none;
+}
+
+[data-android] .toast[data-toast='android-new-chat'] {
+  animation:
+    android-enter 130ms var(--ds-ease-in-out),
+    android-exit 65ms linear calc(var(--toast-duration) - 65ms) forwards;
+}
+
+@keyframes android-enter {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes android-exit {
+  to {
+    opacity: 0;
+  }
 }
 
 /* 带图标时图标在左、文字左对齐，整体仍居中 */

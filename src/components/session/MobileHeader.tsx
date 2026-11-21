@@ -1,12 +1,12 @@
 import { IconMenuOutline20, IconNewChatOutline20 } from '../base/icons.js'
 import { useTranslate } from '../../i18n/index.js'
 import { android } from '../../app/android.js'
-import { newChat } from '../../services/chat/store.js'
+import { newChat, useChatStore } from '../../services/chat/store.js'
 import { setAutoRead, useSettings } from '../../services/settings.js'
-import { stopReadAloud } from '../../services/speech/readAloud.js'
+import { stopReadAloud, useReadAloud } from '../../services/speech/readAloud.js'
 import { AndroidSound } from '../base/AndroidIcons.js'
 import { IconButton } from '../base/IconButton.js'
-import { showToast } from '../base/toastState.js'
+import { showToast, useToast } from '../base/toastState.js'
 import { openMobileSider } from '../sider/mobileSiderState.js'
 import styles from './MobileHeader.module.css'
 
@@ -14,6 +14,9 @@ import styles from './MobileHeader.module.css'
 export const MobileHeader = ({ title }: { title?: string }) => {
   const t = useTranslate()
   const autoRead = useSettings((state) => state.autoRead)
+  const readStatus = useReadAloud((state) => state.status)
+  const reading = readStatus !== 'idle'
+  const activeId = useChatStore((state) => state.activeId)
   return (
     <div className={styles.header}>
       <IconButton
@@ -32,7 +35,8 @@ export const MobileHeader = ({ title }: { title?: string }) => {
               size="xl"
               tone="primary"
               className={styles.sound}
-              icon={<AndroidSound muted={!autoRead} />}
+              data-read-state={reading ? readStatus : undefined}
+              icon={<AndroidSound muted={!autoRead && !reading} />}
               aria-label={t('androidAutoRead')}
               aria-pressed={autoRead}
               onClick={() => {
@@ -50,7 +54,17 @@ export const MobileHeader = ({ title }: { title?: string }) => {
             className={styles.newChat}
             icon={<IconNewChatOutline20 />}
             aria-label={t('newChat')}
-            onClick={newChat}
+            onClick={() => {
+              if (android && activeId === null) {
+                const current = useToast.getState().message
+                if (typeof current !== 'string' && current?.key === 'androidAlreadyInNewChat') {
+                  return
+                }
+                showToast({ key: 'androidAlreadyInNewChat' }, 2130)
+                return
+              }
+              newChat()
+            }}
           />
         </>
       )}

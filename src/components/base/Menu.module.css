@@ -16,6 +16,118 @@
     0 12px 32px rgba(0, 0, 0, 0.08);
 }
 
+[data-android] .sidebarMenu {
+  display: flex;
+  flex-direction: column;
+  width: 194.1333px;
+  max-width: calc(100vw - 24px);
+  min-width: 0;
+  padding: 0;
+
+  .option {
+    gap: 9.2444px;
+    height: 45.1556px;
+    padding: 0 0 0 17.7778px;
+    font-size: 14.9333px;
+    letter-spacing: 0.1185px;
+    line-height: 22.4px;
+  }
+
+  .option + .option {
+    border-top: 1px solid var(--dsw-alias-border-l2);
+  }
+
+  .danger {
+    color: rgb(239 68 68);
+  }
+
+  .icon {
+    width: 18.1333px;
+    height: 18.1333px;
+
+    svg {
+      display: block;
+      width: 18.1333px;
+      height: 18.1333px;
+    }
+  }
+}
+
+[data-android] .userMessageMenu {
+  display: flex;
+  flex-direction: column;
+  width: 194.1333px;
+  max-width: calc(100vw - 24px);
+  min-width: 0;
+  padding: 0;
+  box-shadow: 0 4px 19px rgba(0, 0, 0, 0.15);
+
+  .option {
+    gap: 10.6667px;
+    height: 45.1556px;
+    padding: 0 0 0 16.3556px;
+    font-size: 14.9333px;
+    letter-spacing: 0.1185px;
+    line-height: 22.4px;
+  }
+
+  .option + .option {
+    border-top: 1px solid var(--dsw-alias-border-l2);
+  }
+
+  .icon {
+    width: 18.1333px;
+    height: 18.1333px;
+
+    svg {
+      display: block;
+      width: 16px;
+      height: 16px;
+    }
+  }
+}
+
+[data-android] .assistantMessageMenu {
+  display: flex;
+  flex-direction: column;
+  width: 194.1333px;
+  max-width: calc(100vw - 24px);
+  min-width: 0;
+  padding: 0;
+
+  .option {
+    gap: 10.6667px;
+    height: 45.1556px;
+    padding: 0 0 0 16.3556px;
+    font-size: 14.9333px;
+    letter-spacing: 0.1185px;
+    line-height: 22.4px;
+
+    &:hover {
+      background-color: transparent;
+    }
+
+    &:active {
+      background-color: var(--dsw-alias-interactive-bg-hover);
+    }
+  }
+
+  .option + .option {
+    border-top: 1px solid var(--dsw-alias-border-l2);
+  }
+
+  .icon {
+    width: 18.1333px;
+    height: 18.1333px;
+
+    svg {
+      display: block;
+      width: 16px;
+      height: 16px;
+    }
+  }
+}
+
 .option {
   display: flex;
   align-items: center;

@@ -1,9 +1,9 @@
 import { useTranslate } from '../../i18n/index.js'
 import clsx from 'clsx'
-import { memo, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { android } from '../../app/android.js'
 import { useIsMobile } from '../../app/viewport.js'
-import { IconCopyOutline16, IconEditOutline16 } from '../base/icons.js'
+import { IconCopyOutline16, IconEditOutline16, IconSelectTextOutline16 } from '../base/icons.js'
 import { editMessage, retryUpload } from '../../services/chat/store.js'
 import { stopReadAloud } from '../../services/speech/readAloud.js'
 import type { UserMessage as UserMessageType } from '../../services/chat/types.js'
@@ -13,6 +13,7 @@ import { Menu } from '../base/Menu.js'
 import { showToast } from '../base/toastState.js'
 import { ensureApiKey } from '../settings/settingsDialogState.js'
 import { copyText } from '../../utils/clipboard.js'
+import { AndroidTextSelection } from './AndroidTextSelection.js'
 import {
   BranchSwitcher,
   type MessageVersions,
@@ -44,8 +45,11 @@ export const UserMessage = memo(function UserMessage({
 }) {
   const t = useTranslate()
   const [editing, setEditing] = useState(false)
+  const [selecting, setSelecting] = useState(false)
   const [draft, setDraft] = useState(message.content)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const bubbleRef = useRef<HTMLDivElement>(null)
+  const bubbleTextRef = useRef<HTMLSpanElement>(null)
   const menuTriggerRef = useRef<HTMLButtonElement>(null)
   const isMobile = useIsMobile()
   const canSend = !busy && (draft.trim() !== '' || message.files.length > 0)
@@ -67,9 +71,24 @@ export const UserMessage = memo(function UserMessage({
 
   const startEdit = () => {
     if (!busy) {
+      setSelecting(false)
       setDraft(message.content)
       setEditing(true)
     }
+  }
+
+  const stopSelecting = useCallback(() => {
+    setSelecting(false)
+  }, [])
+
+  const startSelecting = () => {
+    setSelecting(true)
+  }
+
+  const copyMessage = () => {
+    void copyText(message.content).then((copied) =>
+      showToast({ key: copied ? 'copied' : 'copyFailed' }, copied ? 1990 : undefined)
+    )
   }
 
   return (
@@ -97,6 +116,7 @@ export const UserMessage = memo(function UserMessage({
             ref={textareaRef}
             className={styles.textarea}
             aria-label={t('editMessage')}
+            enterKeyHint={android || isMobile ? 'enter' : undefined}
             autoFocus
             rows={1}
             value={draft}
@@ -108,7 +128,13 @@ export const UserMessage = memo(function UserMessage({
               }
               if (event.key === 'Escape') {
                 setEditing(false)
-              } else if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !isMobile) {
+              } else if (
+                event.key === 'Enter' &&
+                !event.shiftKey &&
+                !event.ctrlKey &&
+                !android &&
+                !isMobile
+              ) {
                 event.preventDefault()
                 sendEdit()
               }
@@ -127,11 +153,12 @@ export const UserMessage = memo(function UserMessage({
         <>
           {message.content ? (
             <div
+              ref={bubbleRef}
               className={styles.bubble}
               role={android ? 'button' : undefined}
               tabIndex={android ? 0 : undefined}
               aria-disabled={android && busy ? true : undefined}
-              onClick={android ? startEdit : undefined}
+              onClick={android ? (selecting ? stopSelecting : startEdit) : undefined}
               onKeyDown={(event) => {
                 if (android && (event.key === 'Enter' || event.key === ' ')) {
                   event.preventDefault()
@@ -141,46 +168,66 @@ export const UserMessage = memo(function UserMessage({
               onContextMenu={(event) => {
                 if (android) {
                   event.preventDefault()
+                  stopSelecting()
                   menuTriggerRef.current?.click()
                 }
               }}
             >
-              {message.content}
+              <span ref={bubbleTextRef} className={styles.bubbleText}>
+                {message.content}
+              </span>
               {android ? (
-                <Menu
-                  options={[
-                    {
-                      key: 'copy',
-                      label: t('copy'),
-                      icon: <IconCopyOutline16 />,
-                      onSelect: () => {
-                        void copyText(message.content).then((copied) =>
-                          showToast({ key: copied ? 'copied' : 'copyFailed' })
-                        )
+                <>
+                  <AndroidTextSelection
+                    active={selecting}
+                    containerRef={bubbleRef}
+                    contentRef={bubbleTextRef}
+                    initialMode="all"
+                    onExit={stopSelecting}
+                  />
+                  <Menu
+                    variant="userMessage"
+                    anchorClassName={styles.menuAnchor}
+                    options={[
+                      {
+                        key: 'copy',
+                        label: t('copy'),
+                        icon: (
+                          <span className={styles.menuCopyIcon}>
+                            <IconCopyOutline16 />
+                          </span>
+                        ),
+                        onSelect: copyMessage,
                       },
-                    },
-                    {
-                      key: 'edit',
-                      label: t('androidEditMessage'),
-                      icon: <IconEditOutline16 />,
-                      onSelect: startEdit,
-                    },
-                  ]}
-                >
-                  {({ toggle }) => (
-                    <button
-                      ref={menuTriggerRef}
-                      className={styles.menuTrigger}
-                      type="button"
-                      aria-hidden="true"
-                      tabIndex={-1}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        toggle()
-                      }}
-                    />
-                  )}
-                </Menu>
+                      {
+                        key: 'selectText',
+                        label: t('androidSelectText'),
+                        icon: <IconSelectTextOutline16 />,
+                        onSelect: startSelecting,
+                      },
+                      {
+                        key: 'edit',
+                        label: t('androidEditMessage'),
+                        icon: <IconEditOutline16 />,
+                        onSelect: startEdit,
+                      },
+                    ]}
+                  >
+                    {({ toggle }) => (
+                      <button
+                        ref={menuTriggerRef}
+                        className={styles.menuTrigger}
+                        type="button"
+                        aria-hidden="true"
+                        tabIndex={-1}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          toggle()
+                        }}
+                      />
+                    )}
+                  </Menu>
+                </>
               ) : null}
             </div>
           ) : null}

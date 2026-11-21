@@ -37,6 +37,14 @@
   }
 }
 
+[data-android] .sound[data-read-state='loading'] {
+  color: #d4d4d4;
+}
+
+[data-android] .sound[data-read-state='playing'] {
+  color: #426efe;
+}
+
 [data-android] .newChat svg {
   width: 22px;
   height: 22px;

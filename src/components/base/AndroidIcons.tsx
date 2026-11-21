@@ -5,14 +5,21 @@ export const AndroidSound = ({ muted }: { muted: boolean }) => (
     viewBox="0 0 24 24"
     fill="none"
     aria-hidden="true"
+    data-sound-state={muted ? 'muted' : 'active'}
     stroke="currentColor"
     strokeWidth="1.9"
     strokeLinejoin="round"
   >
     <path
       d={muted ? 'M5 7H2.2v10H6l6.8 4.5v-7M8.4 5.6l4.4-3v7.6' : 'M2.2 7v10H6l6.8 4.5v-19L6 7z'}
+      fill={muted ? 'none' : 'currentColor'}
+      stroke={muted ? 'currentColor' : 'none'}
     />
-    <path d="M16 7.7a6.1 6.1 0 0 1 .7 7.9m2.4-10.9a10.3 10.3 0 0 1 1.3 12.6" />
+    <path d="M16 7.7a6.1 6.1 0 0 1 .7 7.9" />
+    <path
+      d="M18.4 4.7a10.3 10.3 0 0 1 1.3 12.6"
+      opacity={muted ? 1 : 0.25}
+    />
     {muted ? <path d="m1.5 3.2 18.6 18.6" /> : null}
   </svg>
 )

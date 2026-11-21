@@ -8,6 +8,10 @@
   scrollbar-color: var(--scroll-color) transparent;
 }
 
+.scrollArea {
+  display: contents;
+}
+
 .scroll {
   display: contents;
 }
@@ -16,6 +20,14 @@
   .container {
     overflow: hidden;
     scrollbar-gutter: auto;
+  }
+
+  .scrollArea {
+    position: relative;
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
   }
 
   .scroll {
@@ -31,6 +43,48 @@
 
 [data-android] .scroll {
   touch-action: pan-y;
+}
+
+[data-android] .jumpToBottom {
+  position: absolute;
+  right: 13.8667px;
+  bottom: 15.2889px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 44.8px;
+  height: 44.8px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+[data-android] .jumpToBottom::before {
+  content: '';
+  position: absolute;
+  width: 29.8667px;
+  height: 29.8667px;
+  border-radius: 50%;
+  background: var(--dsw-alias-bg-base);
+  box-shadow: 0 0.3556px 2.8444px rgba(0, 0, 0, 0.13);
+}
+
+[data-android] .jumpToBottomIcon {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+}
+
+[data-android] .jumpToBottomIcon > svg {
+  width: 16px;
+  height: 16px;
 }
 
 .column {

@@ -23,7 +23,7 @@ android {
         applicationId = 'io.github.dhz1145.dsapi'
         minSdk = 29
         targetSdk = 36
-        versionCode = 20
+        versionCode = 21
         versionName = appVersion
     }
 

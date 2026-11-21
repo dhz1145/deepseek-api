@@ -1,4 +1,4 @@
-import { memo, useEffect } from 'react'
+import { memo, useEffect, useRef } from 'react'
 import { android } from './android.js'
 import { AndroidUpdatePrompt } from './AndroidUpdatePrompt.js'
 import { useAndroidBackInterception } from './useAndroidBackInterception.js'
@@ -104,6 +104,7 @@ export const App = () => {
   const needsApiSetup = Boolean(android && (!apiKey || !model))
   const drawerOpen = useMobileSider((state) => state.open)
   const drawerGesture = useAndroidDrawerGesture()
+  const mainRef = useRef<HTMLElement>(null)
   const locale = useSettings((state) => state.locale)
   const fontSize = useSettings((state) => state.fontSize)
   // 移动端侧边栏以独立抽屉管理开合状态
@@ -128,6 +129,12 @@ export const App = () => {
     }
   }, [fontSize])
 
+  useEffect(() => {
+    if (mainRef.current) {
+      mainRef.current.inert = Boolean(android && isMobile && drawerOpen)
+    }
+  }, [drawerOpen, isMobile, needsApiSetup])
+
   // 文件数、存储空间达到上限时，附件上只显示「上传失败」，原因用 toast 说明
   useEffect(() => onUploadNotice(showToast), [])
   useEffect(bindChatPersistence, [])
@@ -136,8 +143,12 @@ export const App = () => {
   useEffect(closeSearchPanel, [activeId])
   // 切换会话时停止朗读
   useEffect(stopReadAloud, [activeId])
-  // 移动端选中会话、切换布局后收起抽屉
-  useEffect(closeMobileSider, [activeId, isMobile])
+  // 移动端切换布局后收起抽屉；会话行点击负责在按压反馈后关闭
+  useEffect(() => {
+    if (isMobile) {
+      closeMobileSider()
+    }
+  }, [isMobile])
 
   useEffect(() => {
     void initChat()
@@ -188,7 +199,7 @@ export const App = () => {
         {...(android && isMobile ? drawerGesture : {})}
       >
         {isMobile ? <MobileSider /> : siderCollapsed ? null : <Sider />}
-        <main className={styles.main}>
+        <main ref={mainRef} className={styles.main}>
           {saveError ? (
             <div className={styles.saveError} role="alert">
               <span>{t('sessionSaveFailed')}</span>

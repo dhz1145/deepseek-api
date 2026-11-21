@@ -67,6 +67,9 @@ const CUSTOM_OUTPUT_TOKENS = 4_096
 const CUSTOM_CONTEXT_WINDOW = 128 * 1024
 /** 所有生成请求统一携带的助手身份说明 */
 const SYSTEM_PROMPT = '该助手为DeepSeek，由深度求索公司创造。'
+/** 官方对纯算术首条保留原文标题，不进入服务端摘要通道。 */
+const SIMPLE_ARITHMETIC =
+  /^\s*\d+(?:\.\d+)?(?:\s*[+\-*/×÷]\s*\d+(?:\.\d+)?)+(?:\s*(?:=|等于|\?|？))?\s*$/
 /** 保留最近打开的详情；当前会话、生成中及尚未成功保存的会话不淘汰。 */
 const SESSION_CACHE_LIMIT = 5
 /** 首次请求开启高级内容审核。 */
@@ -761,6 +764,9 @@ export const sendMessage = (targetSessionId: string | null) => {
   const reply = createReply()
   updateSession(sessionId, (session) => ({
     ...appendBranch(session, history.at(-1)?.id ?? null, [question, reply]),
+    title:
+      session.title ||
+      (history.length === 0 && files.length === 0 && SIMPLE_ARITHMETIC.test(text) ? text.trim() : ''),
     updatedAt: now,
   }))
   if (files.length > 0) {

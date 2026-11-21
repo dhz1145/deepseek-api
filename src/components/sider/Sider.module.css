@@ -104,6 +104,14 @@
   }
 }
 
+.pinnedSection::after {
+  content: '';
+  display: block;
+  height: 1px;
+  margin: 7px;
+  background: var(--dsw-alias-border-l2);
+}
+
 .sectionHeader {
   position: sticky;
   top: 0;
@@ -340,6 +348,10 @@
     color: inherit;
     font: inherit;
     font-size: 15px;
+
+    &[data-danger] {
+      color: var(--dsw-alias-state-error-primary);
+    }
 
     &:disabled {
       opacity: 0.35;

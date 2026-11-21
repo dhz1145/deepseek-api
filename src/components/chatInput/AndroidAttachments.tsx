@@ -17,7 +17,7 @@ export const AndroidAttachments = ({
   onRemove,
 }: {
   open: boolean
-  onFiles: (files: File[]) => void
+  onFiles: (files: File[], source: Source) => void
   selectedPhotos: ReadonlyMap<string, string>
   onRecentFile: (file: File, photoId: string) => void
   onRemove: (attachmentId: string) => void
@@ -168,7 +168,7 @@ export const AndroidAttachments = ({
                   const files = Array.from(event.target.files ?? [])
                   event.target.value = ''
                   if (files.length) {
-                    onFiles(files)
+                    onFiles(files, kind)
                   }
                 }}
               />

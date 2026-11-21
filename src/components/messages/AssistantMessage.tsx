@@ -1,8 +1,14 @@
 import { useTranslate } from '../../i18n/index.js'
 import clsx from 'clsx'
-import { memo, useEffect, useRef } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { android } from '../../app/android.js'
-import { IconRefreshOutline16, IconWarningOutline16 } from '../base/icons.js'
+import {
+  IconCopyOutline16,
+  IconPlayMediaOutline16,
+  IconRefreshOutline16,
+  IconSelectTextOutline16,
+  IconWarningOutline16,
+} from '../base/icons.js'
 import { describeReply } from '../../services/chat/describe.js'
 import { canContinueReply } from '../../services/chat/reply.js'
 import { continueReply, regenerateReply } from '../../services/chat/store.js'
@@ -15,11 +21,15 @@ import { useSettings } from '../../services/settings.js'
 import { showToast } from '../base/toastState.js'
 import type { AssistantMessage as AssistantMessageType } from '../../services/chat/types.js'
 import { openSettings } from '../settings/settingsDialogState.js'
+import { copyText as copyToClipboard } from '../../utils/clipboard.js'
 import { IconButton } from '../base/IconButton.js'
 import { Button } from '../base/Button.js'
+import { Menu } from '../base/Menu.js'
 import { Markdown } from '../markdown/Markdown.js'
+import { formatAndroidCopyText } from '../../services/markdown/copyText.js'
 import { SiteThumbnails } from '../search/SiteLogo.js'
 import { toggleSearchPanel, useSearchPanel } from '../search/searchPanelState.js'
+import { AndroidTextSelection } from './AndroidTextSelection.js'
 import { ReadAloudButton } from './ReadAloudButton.js'
 import { CopyButton } from './CopyButton.js'
 import { ReplyArea } from './ReplyArea.js'
@@ -65,8 +75,40 @@ export const AssistantMessage = memo(function AssistantMessage({
   const responseText = [answer?.text, notice?.presentation === 'response' ? notice.text : null]
     .filter(Boolean)
     .join('\n\n')
-  const copyText = responseText || notice?.text
+  const copyText = useMemo(() => {
+    if (!android) {
+      return responseText || notice?.text
+    }
+    if (responseText) {
+      return formatAndroidCopyText(responseText) || responseText
+    }
+    return notice?.text
+  }, [notice?.text, responseText])
+  const [selecting, setSelecting] = useState(false)
+  const [selectionPoint, setSelectionPoint] = useState<{ x: number; y: number } | undefined>()
+  const [menuOffset, setMenuOffset] = useState<{ x: number; y: number } | undefined>()
+  const lastTouchRef = useRef<{ x: number; y: number } | undefined>(undefined)
+  const selectableRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const menuTriggerRef = useRef<HTMLButtonElement>(null)
   const wasStreaming = useRef(streaming)
+
+  const stopSelecting = useCallback(() => {
+    setSelecting(false)
+  }, [])
+
+  const startSelecting = () => {
+    setSelecting(true)
+  }
+
+  const copyAssistantText = () => {
+    if (!copyText) {
+      return
+    }
+    void copyToClipboard(copyText).then((copied) =>
+      showToast({ key: copied ? 'copied' : 'copyFailed' }, copied ? 1990 : undefined)
+    )
+  }
   useEffect(() => {
     if (
       android &&
@@ -95,62 +137,173 @@ export const AssistantMessage = memo(function AssistantMessage({
           hasResponse={!!responseText}
         />
       )}
-      {answer ? (
-        <Markdown
-          className="ds-assistant-message-main-content"
-          content={answer.markdown}
-          loading={streaming}
-          cacheKey={message.id}
-          disableLink={false}
-          sources={view.sources}
-        />
-      ) : null}
+      <div
+        ref={selectableRef}
+        className={styles.selectable}
+        onPointerDown={(event) => {
+          if (android) {
+            lastTouchRef.current = { x: event.clientX, y: event.clientY }
+          }
+        }}
+        onContextMenu={(event) => {
+          if (!android || !responseText) {
+            return
+          }
+          event.preventDefault()
+          event.stopPropagation()
+          stopSelecting()
+          const point =
+            event.clientX || event.clientY
+              ? { x: event.clientX, y: event.clientY }
+              : lastTouchRef.current
+          setSelectionPoint(point)
+          const rect = selectableRef.current?.getBoundingClientRect()
+          if (point && rect) {
+            setMenuOffset({
+              x: Math.max(0, Math.min(rect.width, point.x - rect.left)),
+              y: Math.max(0, Math.min(rect.height, point.y - rect.top)),
+            })
+          }
+          requestAnimationFrame(() => menuTriggerRef.current?.click())
+        }}
+        onClickCapture={(event) => {
+          if (selecting && contentRef.current?.contains(event.target as Node)) {
+            event.preventDefault()
+            event.stopPropagation()
+            stopSelecting()
+          }
+        }}
+      >
+        {android && responseText ? (
+          <span
+            className={styles.menuAnchor}
+            style={menuOffset ? { left: menuOffset.x, top: menuOffset.y } : undefined}
+          >
+            <Menu
+              variant="assistantMessage"
+              options={[
+                {
+                  key: 'copy',
+                  label: t('copy'),
+                  icon: <IconCopyOutline16 />,
+                  onSelect: copyAssistantText,
+                },
+                {
+                  key: 'selectText',
+                  label: t('androidSelectText'),
+                  icon: <IconSelectTextOutline16 />,
+                  onSelect: startSelecting,
+                },
+                {
+                  key: 'regenerate',
+                  label: t('regenerate'),
+                  icon: <IconRefreshOutline16 />,
+                  onSelect: () => {
+                    stopReadAloud()
+                    regenerateReply(sessionId, message.id)
+                  },
+                },
+                ...(!customEndpoint || canReadAloud
+                  ? [
+                      {
+                        key: 'read',
+                        label: t('ttsPlay'),
+                        icon: <IconPlayMediaOutline16 />,
+                        onSelect: () =>
+                          toggleReadAloud(message.id, responseText, (error) =>
+                            showToast(describeReadAloudError(error))
+                          ),
+                      },
+                    ]
+                  : []),
+              ]}
+            >
+              {({ toggle }) => (
+                <button
+                  ref={menuTriggerRef}
+                  className={styles.menuTrigger}
+                  type="button"
+                  aria-hidden="true"
+                  tabIndex={-1}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    toggle()
+                  }}
+                />
+              )}
+            </Menu>
+          </span>
+        ) : null}
+        <div ref={contentRef} className={styles.selectableContent}>
+          {answer ? (
+            <Markdown
+              className="ds-assistant-message-main-content"
+              content={answer.markdown}
+              loading={streaming}
+              cacheKey={message.id}
+              disableLink={false}
+              sources={view.sources}
+            />
+          ) : null}
+          {notice?.presentation === 'response' ? (
+            <Markdown
+              className="ds-assistant-message-main-content"
+              content={notice.text}
+              loading={false}
+              cacheKey={`${message.id}-template`}
+              disableLink={false}
+            />
+          ) : notice ? (
+            <div className={styles.notice}>
+              <IconWarningOutline16 />
+              <span>
+                {notice.text}
+                {notice.action === 'apiKey' ? (
+                  <>
+                    {' '}
+                    <button
+                      type="button"
+                      className={styles.noticeAction}
+                      onClick={() => openSettings('data')}
+                    >
+                      {t('changeApiKey')}
+                    </button>
+                  </>
+                ) : null}
+                {notice.action === 'topUp' && !customEndpoint ? (
+                  <>
+                    {' '}
+                    <a
+                      className={styles.noticeAction}
+                      href={TOP_UP_URL}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {t('topUp')}
+                    </a>
+                  </>
+                ) : null}
+              </span>
+            </div>
+          ) : null}
+        </div>
+        {android ? (
+          <AndroidTextSelection
+            active={selecting}
+            containerRef={selectableRef}
+            contentRef={contentRef}
+            initialMode="block"
+            initialPoint={selectionPoint}
+            fullCopyText={copyText}
+            onExit={stopSelecting}
+          />
+        ) : null}
+      </div>
       {waiting ? (
         <div className={styles.waiting}>
           {[0, 1, 2].map((index) => (
             <span key={index} className={styles.waitingDot} />
           ))}
-        </div>
-      ) : null}
-      {notice?.presentation === 'response' ? (
-        <Markdown
-          className="ds-assistant-message-main-content"
-          content={notice.text}
-          loading={false}
-          cacheKey={`${message.id}-template`}
-          disableLink={false}
-        />
-      ) : notice ? (
-        <div className={styles.notice}>
-          <IconWarningOutline16 />
-          <span>
-            {notice.text}
-            {notice.action === 'apiKey' ? (
-              <>
-                {' '}
-                <button
-                  type="button"
-                  className={styles.noticeAction}
-                  onClick={() => openSettings('data')}
-                >
-                  {t('changeApiKey')}
-                </button>
-              </>
-            ) : null}
-            {notice.action === 'topUp' && !customEndpoint ? (
-              <>
-                {' '}
-                <a
-                  className={styles.noticeAction}
-                  href={TOP_UP_URL}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {t('topUp')}
-                </a>
-              </>
-            ) : null}
-          </span>
         </div>
       ) : null}
       {!streaming && !refused && view.searchResults.length > 0 ? (
@@ -180,11 +333,24 @@ export const AssistantMessage = memo(function AssistantMessage({
         <div className={styles.bottom}>
           <BranchSwitcher versions={versions} disabled={busy} onSelect={onSelectVersion} />
           <div className={clsx(styles.actions, isLast && styles.alwaysShow)}>
-            {copyText ? <CopyButton text={copyText} /> : null}
+            {copyText ? (
+              <CopyButton
+                text={copyText}
+                buttonProps={
+                  android
+                    ? {
+                        tabIndex: -1,
+                        onMouseDown: (event) => event.preventDefault(),
+                      }
+                    : undefined
+                }
+              />
+            ) : null}
             {responseText && !refused && (!customEndpoint || canReadAloud) ? (
               <ReadAloudButton messageId={message.id} text={responseText} />
             ) : null}
             <IconButton
+              className={styles.regenerate}
               icon={<IconRefreshOutline16 />}
               tooltip={t('regenerate')}
               tooltipPlacement="bottom"

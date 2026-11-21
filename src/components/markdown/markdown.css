@@ -92,6 +92,13 @@
   }
 }
 
+[data-android] .ds-markdown a:not(.ds-a) {
+  border-left-width: 0;
+  border-right-width: 0;
+  margin-left: 0;
+  margin-right: 0;
+}
+
 .ds-markdown a:not(.ds-a):focus-visible {
   box-shadow: 0 0 0 2px var(--dsw-alias-brand-text);
 }

@@ -39,7 +39,7 @@ export const describeReply = (reply: AssistantMessage): Notice | null => {
       case 'rateLimited':
         return { text: translate('replyRateLimited') }
       case 'serverBusy':
-        return { text: translate('completionServerBusyToast') }
+        return { text: translate('completionServerErrorToast') }
       default:
         return message ? { text: message } : null
     }

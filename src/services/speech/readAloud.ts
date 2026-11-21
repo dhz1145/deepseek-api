@@ -4,6 +4,8 @@ import { ApiError } from '../api/client.js'
 import { classifyApiError } from '../api/errors.js'
 import { synthesize, TTS_SAMPLE_RATE } from '../api/speech.js'
 import { useSettings } from '../settings.js'
+import { android } from '../../app/android.js'
+import { showToast } from '../../components/base/toastState.js'
 
 /**
  * 朗读：同一时间只读一条回复。
@@ -127,6 +129,9 @@ export const toggleReadAloud = (
         lastSource = source
         if (useReadAloud.getState().status === 'loading') {
           useReadAloud.setState({ status: 'playing' })
+          if (android?.getMusicVolume?.() === 0) {
+            showToast({ key: 'readAloudLowVolume' }, 1900)
+          }
         }
       }
       if (lastSource) {

@@ -77,7 +77,8 @@ export const AndroidDraftAttachments = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items])
 
-  const showSuggestions = items.length > 0 ? suggestions : lastSuggestions.current
+  const showSuggestions =
+    items.length > 0 ? suggestions : lastSuggestions.current && displayed.length > 0
   return (
     <div className={styles.androidPreview} data-expanded={items.length > 0}>
       <div className={styles.androidPreviewContent}>
@@ -89,29 +90,31 @@ export const AndroidDraftAttachments = ({
           onRemove={onRemove}
           onPreview={onPreview}
         />
-        <div className={styles.quickSuggestions} data-open={showSuggestions}>
-          <div className={styles.quickSuggestionsClip}>
-            <div className={styles.quickSuggestionsList}>
-              {PHOTO_ACTIONS.map((key) =>
-                loading ? (
-                  <span key={key} className={styles.quickSuggestionSkeleton} aria-hidden="true" />
-                ) : (
-                  <button
-                    key={key}
-                    type="button"
-                    disabled={!canSend}
-                    onClick={() => onSuggestion(t(key))}
-                  >
-                    {t(key)}
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
-                      <path d="M2.5 8h10m-3.5-3.5L12.5 8 9 11.5" />
-                    </svg>
-                  </button>
-                )
-              )}
+        {showSuggestions ? (
+          <div className={styles.quickSuggestions} data-open="true">
+            <div className={styles.quickSuggestionsClip}>
+              <div className={styles.quickSuggestionsList}>
+                {PHOTO_ACTIONS.map((key) =>
+                  loading ? (
+                    <span key={key} className={styles.quickSuggestionSkeleton} aria-hidden="true" />
+                  ) : (
+                    <button
+                      key={key}
+                      type="button"
+                      disabled={!canSend}
+                      onClick={() => onSuggestion(t(key))}
+                    >
+                      <span>{t(key)}</span>
+                      <svg viewBox="0 0 16 16" aria-hidden="true">
+                        <path d="M2.5 8h10m-3.5-3.5L12.5 8 9 11.5" />
+                      </svg>
+                    </button>
+                  )
+                )}
+              </div>
             </div>
           </div>
-        </div>
+        ) : null}
       </div>
     </div>
   )

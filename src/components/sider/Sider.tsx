@@ -4,6 +4,7 @@ import { android } from '../../app/android.js'
 import { useTranslate } from '../../i18n/index.js'
 import {
   IconPanelLeftOutline16,
+  IconPinOutline16,
   IconSearchOutline16,
   IconCloseOutline16,
   IconEllipsisOutline16,
@@ -14,13 +15,12 @@ import { setPinnedSessions, setSiderCollapsed, useSettings } from '../../service
 import { groupSessions } from '../../services/chat/sessionGroups.js'
 import { newChat, removeSession, useChatStore } from '../../services/chat/store.js'
 import type { SessionSummary } from '../../services/chat/types.js'
-import { Button } from '../base/Button.js'
 import { IconButton } from '../base/IconButton.js'
-import { Modal } from '../base/Modal.js'
 import { showToast } from '../base/toastState.js'
 import { ProfileAvatar } from '../settings/ProfileAvatar.js'
 import { openSettings } from '../settings/settingsDialogState.js'
 import { closeMobileSider, useMobileSider } from './mobileSiderState.js'
+import { SessionActionDialog } from './SessionActionDialog.js'
 import { SessionItem } from './SessionItem.js'
 import { useSessionSearch } from './useSessionSearch.js'
 import styles from './Sider.module.css'
@@ -65,7 +65,7 @@ export const Sider = memo(function Sider({ mobile = false }: { mobile?: boolean 
     return groups.map((group, index) => {
       // 与分组的 margin、padding、标题行高和会话行高相同，保留原生粘性标题。
       const top = end + (index ? (androidDrawer ? 7 : 16) : 0) + 4 + (mobile ? 29 : 22)
-      end = top + group.sessions.length * rowHeight
+      end = top + group.sessions.length * rowHeight + (group.key === 'pinned' ? 15 : 0)
       return { ...group, top }
     })
   }, [androidDrawer, groups, mobile, rowHeight])
@@ -92,6 +92,21 @@ export const Sider = memo(function Sider({ mobile = false }: { mobile?: boolean 
   }, [])
   const [deleting, setDeleting] = useState<SessionSummary[]>([])
   const deleteOne = useCallback((session: SessionSummary) => setDeleting([session]), [])
+  const togglePinned = useCallback(
+    (session: SessionSummary) => {
+      setPinnedSessions(
+        pinnedIds.includes(session.id)
+          ? pinnedIds.filter((id) => id !== session.id)
+          : [...new Set([...pinnedIds, session.id])]
+      )
+    },
+    [pinnedIds]
+  )
+  const startSelection = useCallback((session: SessionSummary) => {
+    setSelecting(true)
+    setChecked(new Set([session.id]))
+    setPinning(null)
+  }, [])
   const [deletePending, setDeletePending] = useState(false)
   const drawerOpen = useMobileSider((state) => state.open)
   const closeSelection = useCallback(() => {
@@ -132,7 +147,7 @@ export const Sider = memo(function Sider({ mobile = false }: { mobile?: boolean 
 
   return (
     <div className={clsx(styles.sider, mobile && styles.mobile)}>
-      {androidDrawer && selecting ? (
+      {selecting ? (
         <div className={styles.selectionHeader}>
           {checked.size
             ? t('androidSelectedChats', { count: checked.size })
@@ -200,11 +215,11 @@ export const Sider = memo(function Sider({ mobile = false }: { mobile?: boolean 
                 <path d="M8 5h7M8 13h7" strokeWidth="1.2" />
               </svg>
             }
-            aria-label={t('androidSelectChats')}
+            aria-label={t('androidMultiSelect')}
             onClick={() => setSelecting(true)}
           />
         ) : null}
-        <div className={styles.list} ref={listRef}>
+        <div ref={listRef} className={styles.list}>
           {positionedGroups.map((group) => {
             const limit = group.sessions.length
             const start = Math.min(
@@ -219,7 +234,10 @@ export const Sider = memo(function Sider({ mobile = false }: { mobile?: boolean 
               )
             )
             return (
-              <div key={group.key} className={styles.section}>
+              <div
+                key={group.key}
+                className={clsx(styles.section, group.key === 'pinned' && styles.pinnedSection)}
+              >
                 <div className={styles.sectionHeader}>{group.label}</div>
                 {start ? <div aria-hidden="true" style={{ height: start * rowHeight }} /> : null}
                 {group.sessions.slice(start, end).map((session) => (
@@ -227,6 +245,9 @@ export const Sider = memo(function Sider({ mobile = false }: { mobile?: boolean 
                     key={session.id}
                     session={session}
                     active={session.id === activeId}
+                    pinned={pinnedIds.includes(session.id)}
+                    onTogglePin={togglePinned}
+                    onMultiSelect={startSelection}
                     onDelete={deleteOne}
                     selection={
                       selecting
@@ -264,20 +285,12 @@ export const Sider = memo(function Sider({ mobile = false }: { mobile?: boolean 
               disabled={!checked.size}
               onClick={() => setPinning({ ids: checked, unpin })}
             >
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 18 18"
-                fill="none"
-                stroke="currentColor"
-                aria-hidden="true"
-              >
-                <path d="m6 7 4-4 3 3-4 4-1 3-2-2-3 3-1-1 3-3-2-2z" />
-              </svg>
+              <IconPinOutline16 />
               {t(unpin ? 'androidUnpin' : 'androidPinned')}
             </button>
             <button
               type="button"
+              data-danger=""
               disabled={!checked.size}
               onClick={() => setDeleting(sessions.filter((session) => checked.has(session.id)))}
             >
@@ -299,86 +312,75 @@ export const Sider = memo(function Sider({ mobile = false }: { mobile?: boolean 
         )}
       </div>
       {pinning ? (
-        <Modal
+        <SessionActionDialog
           title={t(pinning.unpin ? 'androidUnpinConfirm' : 'androidPinConfirm', {
             count: pinning.ids.size,
           })}
-          onClose={() => setPinning(null)}
-          footer={
-            <>
-              <Button variant="outlined" onClick={() => setPinning(null)}>
-                {t(pinning.unpin ? 'androidKeepPinned' : 'cancel')}
-              </Button>
-              <Button
-                onClick={() => {
-                  const ids = sessions.filter((session) => pinning.ids.has(session.id))
-                  setPinnedSessions(
-                    pinning.unpin
-                      ? pinnedIds.filter((id) => !pinning.ids.has(id))
-                      : [...new Set([...pinnedIds, ...ids.map(({ id }) => id)])]
-                  )
-                  showToast({
-                    key: pinning.unpin ? 'androidUnpinnedChats' : 'androidPinnedChats',
-                    params: { count: ids.length },
-                  })
-                  closeSelection()
-                }}
-              >
-                {t(pinning.unpin ? 'androidUnpin' : 'androidPinned')}
-              </Button>
-            </>
-          }
+          cancelLabel={t(pinning.unpin ? 'androidKeepPinned' : 'cancel')}
+          confirmLabel={t(pinning.unpin ? 'androidUnpin' : 'androidPinned')}
+          onCancel={() => setPinning(null)}
+          onConfirm={() => {
+            const ids = sessions.filter((session) => pinning.ids.has(session.id))
+            setPinnedSessions(
+              pinning.unpin
+                ? pinnedIds.filter((id) => !pinning.ids.has(id))
+                : [...new Set([...pinnedIds, ...ids.map(({ id }) => id)])]
+            )
+            showToast({
+              key: pinning.unpin ? 'androidUnpinnedChats' : 'androidPinnedChats',
+              params: { count: ids.length },
+            })
+            closeSelection()
+          }}
         />
       ) : null}
       {deleting.length ? (
-        <Modal
-          title={t('deleteSessionModalContentTitle')}
-          onClose={() => {
-            if (!deletePending) {
-              setDeleting([])
+        <SessionActionDialog
+          title={
+            deleting.length === 1
+              ? t('androidDeleteOneTitle')
+              : t('androidDeleteManyTitle', { count: deleting.length })
+          }
+          description={
+            deleting.length === 1
+              ? t('androidDeleteOneDescription')
+              : t('androidDeleteManyDescription')
+          }
+          cancelLabel={t('cancel')}
+          confirmLabel={
+            deleting.length === 1 ? t('androidDeleteOneConfirm') : t('androidDeleteManyConfirm')
+          }
+          danger
+          stacked
+          closeDisabled={deletePending}
+          confirmDisabled={deletePending}
+          onCancel={() => setDeleting([])}
+          onConfirm={async () => {
+            setDeletePending(true)
+            try {
+              const remaining: SessionSummary[] = []
+              const deleted = new Set<string>()
+              for (const session of deleting) {
+                if (await removeSession(session.id)) {
+                  deleted.add(session.id)
+                } else {
+                  remaining.push(session)
+                }
+              }
+              setDeleting(remaining)
+              if (deleted.size) {
+                setPinnedSessions(pinnedIds.filter((id) => !deleted.has(id)))
+              }
+              if (remaining.length) {
+                showToast({ key: 'sessionDeleteFailed', type: 'error' })
+              } else {
+                closeSelection()
+              }
+            } finally {
+              setDeletePending(false)
             }
           }}
-          footer={
-            <>
-              <Button variant="outlined" disabled={deletePending} onClick={() => setDeleting([])}>
-                {t('cancel')}
-              </Button>
-              <Button
-                variant="danger"
-                disabled={deletePending}
-                onClick={async () => {
-                  setDeletePending(true)
-                  try {
-                    const remaining: SessionSummary[] = []
-                    const deleted = new Set<string>()
-                    for (const session of deleting) {
-                      if (await removeSession(session.id)) {
-                        deleted.add(session.id)
-                      } else {
-                        remaining.push(session)
-                      }
-                    }
-                    setDeleting(remaining)
-                    if (deleted.size) {
-                      setPinnedSessions(pinnedIds.filter((id) => !deleted.has(id)))
-                    }
-                    if (remaining.length) {
-                      showToast({ key: 'sessionDeleteFailed', type: 'error' })
-                    } else {
-                      closeSelection()
-                    }
-                  } finally {
-                    setDeletePending(false)
-                  }
-                }}
-              >
-                {t('delete')}
-              </Button>
-            </>
-          }
-        >
-          {t('deleteSessionWithFilesDescription')}
-        </Modal>
+        />
       ) : null}
     </div>
   )
@@ -386,6 +388,7 @@ export const Sider = memo(function Sider({ mobile = false }: { mobile?: boolean 
 
 /** 移动端抽屉：浮在页面上方，点空白区域关闭。 */
 export const MobileSider = memo(function MobileSider() {
+  const t = useTranslate()
   const open = useMobileSider((state) => state.open)
   const drawer = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -398,7 +401,14 @@ export const MobileSider = memo(function MobileSider() {
   }
   return (
     <>
-      {open ? <div className={styles.drawerMask} onClick={closeMobileSider} /> : null}
+      {open ? (
+        <div
+          className={styles.drawerMask}
+          role="button"
+          aria-label={t('closeSiderbarButton')}
+          onClick={closeMobileSider}
+        />
+      ) : null}
       <div className={styles.drawer} ref={drawer} data-android-drawer={android ? '' : undefined}>
         <Sider mobile />
       </div>

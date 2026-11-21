@@ -124,8 +124,9 @@ const composer = '[data-drawer-open] textarea'
 const chatTitle = `Android compatibility test chat ${Date.now()}`
 const question = 'Android compatibility smoke test'
 const streamReply = 'Android WebView streamed this reply.'
+const formattedReply = `${streamReply}\n\n**Bold** and $x^2$.`
 const openSidebar =
-  'document.querySelector(\'button[aria-label="Open sidebar"], button[aria-label="打开边栏"]\').click()'
+  'document.querySelector(\'button[aria-label="Open sidebar"], button[aria-label="打开侧边栏"]\').click()'
 const setInput = (selector, value) => `(() => {
   const input = document.querySelector(${JSON.stringify(selector)});
   Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value').set.call(input, ${JSON.stringify(value)});
@@ -190,7 +191,7 @@ try {
     const events = [
       { type: 'message_start', message: { id: 'android-compat', role: 'assistant', content: [] } },
       { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
-      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: ${JSON.stringify(streamReply)} } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: ${JSON.stringify(formattedReply)} } },
       { type: 'content_block_stop', index: 0 },
       { type: 'message_delta', delta: { stop_reason: 'end_turn', title: ${JSON.stringify(chatTitle)} } },
       { type: 'message_stop' }
@@ -302,6 +303,12 @@ try {
     )
   })
   await evaluate(setInput(composer, question))
+  await evaluate(`document.querySelector(${JSON.stringify(composer)}).setSelectionRange(${question.length}, ${question.length})`)
+  adb('shell', 'input', 'keyevent', 'KEYCODE_ENTER')
+  await until('Android Enter must insert a newline instead of sending', () =>
+    evaluate(`document.querySelector(${JSON.stringify(composer)}).value === ${JSON.stringify(question + '\n')}`)
+  )
+  assert.equal(await evaluate(`document.body.innerText.includes(${JSON.stringify(streamReply)})`), false)
   await evaluate(
     'document.querySelector(\'button[aria-label="Send"], button[aria-label="发送"]\').click()'
   )
@@ -316,6 +323,47 @@ try {
     return geometry?.visible && !geometry.keyboard && Math.abs(geometry.height - chat.height) <= 2
   })
   assert.equal(await evaluate('!!document.querySelector("main > [role=alert]")'), false)
+  const bubble = `Array.from(document.querySelectorAll('main [role="button"]')).find((element) =>
+    element.firstElementChild?.textContent === ${JSON.stringify(question)})`
+  const originalSize = await evaluate(`parseFloat(getComputedStyle(${bubble}).fontSize)`)
+  await evaluate(`document.documentElement.style.setProperty('--android-chat-font-scale', '1.3')`)
+  assert.ok(await evaluate(`parseFloat(getComputedStyle(${bubble}).fontSize) > ${originalSize}`))
+  await evaluate(`document.documentElement.style.setProperty('--android-chat-font-scale', '1')`)
+
+  await evaluate(`Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+    writeText: async (text) => { window.lastCopied = text }
+  } })`)
+  const assistant = `Array.from(document.querySelectorAll('.ds-assistant-message-main-content')).find(
+    (element) => element.textContent.includes(${JSON.stringify(streamReply)}))`
+  const contextMenu = (target) => evaluate(`(() => {
+    const target = ${target};
+    const box = target.getBoundingClientRect();
+    target.dispatchEvent(new MouseEvent('contextmenu', {bubbles: true, cancelable: true,
+      clientX: box.left + 10, clientY: box.top + 5}));
+  })()`)
+  const menuChoice = (label) => evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll('[role=menuitem]')).find((element) =>
+      ${JSON.stringify(label)}.includes(element.textContent.trim()) && element.offsetWidth > 0);
+    if (!button) return false;
+    button.click();
+    return true;
+  })()`)
+  await contextMenu(assistant)
+  await until('Assistant long-press selection menu must offer Select text', () => menuChoice(['Select text', '选择文本']))
+  await until('Selecting an assistant response should show a copy toolbar', () =>
+    evaluate(`!!document.querySelector('[role="toolbar"][data-selection-interactive]')`)
+  )
+  const toolbar = `document.querySelector('[role="toolbar"][data-selection-interactive]')`
+  await evaluate(`${toolbar}.querySelectorAll('button')[1]?.click()`)
+  await evaluate(`${toolbar}.querySelector('button').click()`)
+  assert.equal(await evaluate('window.lastCopied'), `${streamReply}\n\nBold and x^2.`)
+  await contextMenu(bubble)
+  await until('User bubble must offer Select text', () => menuChoice(['Select text', '选择文本']))
+  await until('User bubble selection should show the copy toolbar', () => evaluate(`!!${toolbar}`))
+  await evaluate(`${toolbar}.querySelector('button').click()`)
+  assert.equal(await evaluate('window.lastCopied'), question)
+  assert.equal(await evaluate(`!!document.querySelector('textarea[aria-label="Edit message"], textarea[aria-label="编辑消息"]')`), false)
+  console.log('PASS Android Enter inserts newline, user text scales, long-press selects, LaTeX copies, and copy does not edit')
   await evaluate(openSidebar)
   await until('The open sidebar should move the conversation to the right', () =>
     evaluate(`(() => {
@@ -327,6 +375,22 @@ try {
         && getComputedStyle(frame, '::before').visibility === 'visible'
         && getComputedStyle(main).borderTopLeftRadius === '36px';
     })()`)
+  )
+  const historyMenu = `document.querySelector('[data-android-drawer] button[aria-label="Show menu"], [data-android-drawer] button[aria-label="显示菜单"]')`
+  await evaluate(`${historyMenu}.click()`)
+  await until('Active history menu should allow pinning', () => menuChoice(['Pin', '置顶']))
+  await evaluate(`${historyMenu}.click()`)
+  await until('Pinned history menu should allow multi-select', () => menuChoice(['Select', '多选']))
+  await until('Multi-select should check the originating conversation', () =>
+    evaluate(`!!document.querySelector('[data-android-drawer] [role=checkbox][aria-checked=true]')`)
+  )
+  await evaluate(`document.querySelector('[data-android-drawer] button[aria-label="Close"], [data-android-drawer] button[aria-label="关闭"]').click()`)
+  await evaluate(`${historyMenu}.click()`)
+  await until('History menu should allow rename', () => menuChoice(['Rename', '重命名']))
+  await until('Rename should open a dialog', () => evaluate(`!!document.querySelector('[role=dialog] input')`))
+  await evaluate(`window.dispatchEvent(new CustomEvent('android-back', { cancelable: true }))`)
+  await until('Android back should close the rename dialog before the drawer', () =>
+    evaluate(`!document.querySelector('[role=dialog] input') && !!document.querySelector('[data-drawer-open=true]')`)
   )
   adb('shell', 'input', 'keyevent', 'KEYCODE_BACK')
   await until('Android back should close the sidebar and restore the conversation', async () => {

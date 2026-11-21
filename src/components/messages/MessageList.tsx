@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { android } from '../../app/android.js'
 import { useIsMobile } from '../../app/viewport.js'
 import {
   buildMessageVersions,
@@ -8,6 +9,8 @@ import {
 import { selectMessageVersion } from '../../services/chat/store.js'
 import type { Session } from '../../services/chat/types.js'
 import { closeSearchPanel } from '../search/searchPanelState.js'
+import { useTranslate } from '../../i18n/index.js'
+import { IconChevronDownOutline14 } from '../base/icons.js'
 import { AssistantMessage } from './AssistantMessage.js'
 import { ScrollToBottomContext } from './scrollContext.js'
 import { UserMessage } from './UserMessage.js'
@@ -31,6 +34,7 @@ import styles from './MessageList.module.css'
 
 /** 距底部小于该值时视为在底部，流式内容增长时跟随 */
 const STICKY_THRESHOLD = 40
+const JUMP_TO_BOTTOM_THRESHOLD = 44.8
 const EMPTY_VERSIONS: MessageVersions = { ids: [], index: -1 }
 const INITIAL_MESSAGES = 4
 const OLDER_MESSAGES = 8
@@ -45,11 +49,13 @@ export const MessageList = ({
   streaming: boolean
   footer: React.ReactNode
 }) => {
+  const t = useTranslate()
   const isMobile = useIsMobile()
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const stickyRef = useRef(true)
   const scrollTopRef = useRef(0)
+  const jumpFrameRef = useRef(0)
   const restoreScrollRef = useRef<{ messageId: string; top: number } | null>(null)
   const messages = useMemo(() => getVisibleMessages(session), [session])
   const latestStart = Math.max(0, messages.length - INITIAL_MESSAGES)
@@ -62,6 +68,7 @@ export const MessageList = ({
     setMessageWindow({ sessionId: session.id, start })
   }
   const prependAnchor = useRef<{ element: Element; top: number } | null>(null)
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false)
   const [previousVersions, setPreviousVersions] = useState(() =>
     buildMessageVersions(session, new Map())
   )
@@ -78,10 +85,41 @@ export const MessageList = ({
     if (el && stickyRef.current) {
       el.scrollTop = el.scrollHeight
       scrollTopRef.current = el.scrollTop
+      setShowJumpToBottom(false)
     }
   }, [])
   const stopFollowing = useCallback(() => {
     stickyRef.current = false
+  }, [])
+  const jumpToBottom = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) {
+      return
+    }
+    stickyRef.current = true
+    setShowJumpToBottom(false)
+    cancelAnimationFrame(jumpFrameRef.current)
+    const start = el.scrollTop
+    const target = el.scrollHeight - el.clientHeight
+    if (target <= start) {
+      el.scrollTop = el.scrollHeight
+      scrollTopRef.current = el.scrollTop
+      return
+    }
+    const started = performance.now()
+    const step = (now: number) => {
+      const progress = Math.min(1, (now - started) / 337)
+      const eased = 1 - (1 - progress) ** 3
+      el.scrollTop = start + (target - start) * eased
+      scrollTopRef.current = el.scrollTop
+      if (progress < 1) {
+        jumpFrameRef.current = requestAnimationFrame(step)
+      } else {
+        el.scrollTop = el.scrollHeight
+        scrollTopRef.current = el.scrollTop
+      }
+    }
+    jumpFrameRef.current = requestAnimationFrame(step)
   }, [])
   // 内容、键盘和输入框高度变化时，继续遵循当前跟随状态。
   useLayoutEffect(() => {
@@ -161,6 +199,7 @@ export const MessageList = ({
   }, [session.id, lastMessageId, scrollToBottom])
 
   useEffect(closeSearchPanel, [session.id, lastMessageId])
+  useEffect(() => () => cancelAnimationFrame(jumpFrameRef.current), [])
 
   const selectVersion = useCallback(
     (messageId: string, anchorTop: number) => {
@@ -195,6 +234,10 @@ export const MessageList = ({
         stickyRef.current = false
       }
       scrollTopRef.current = el.scrollTop
+      if (android && isMobile) {
+        const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+        setShowJumpToBottom(distance > JUMP_TO_BOTTOM_THRESHOLD)
+      }
     }
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
@@ -205,36 +248,52 @@ export const MessageList = ({
   return (
     <ScrollToBottomContext.Provider value={stopFollowing}>
       <div ref={isMobile ? undefined : scrollRef} className={styles.container}>
-        <div ref={isMobile ? scrollRef : undefined} className={styles.scroll}>
-          <div ref={contentRef} className={styles.column}>
-            {messages.slice(start).map((message, offset) => {
-              const index = start + offset
-              return message.role === 'user' ? (
-                <UserMessage
-                  key={message.id}
-                  sessionId={session.id}
-                  message={message}
-                  retryUploadId={uploadRetryId}
-                  isFirst={index === 0}
-                  isLast={index === lastIndex || index === lastIndex - 1}
-                  busy={streaming}
-                  versions={versions.get(message.id) ?? EMPTY_VERSIONS}
-                  onSelectVersion={selectVersion}
-                />
-              ) : (
-                <AssistantMessage
-                  key={message.id}
-                  sessionId={session.id}
-                  message={message}
-                  isLast={index === lastIndex}
-                  streaming={streaming && index === lastIndex}
-                  busy={streaming}
-                  versions={versions.get(message.id) ?? EMPTY_VERSIONS}
-                  onSelectVersion={selectVersion}
-                />
-              )
-            })}
+        <div className={styles.scrollArea}>
+          <div ref={isMobile ? scrollRef : undefined} className={styles.scroll}>
+            <div ref={contentRef} className={styles.column}>
+              {messages.slice(start).map((message, offset) => {
+                const index = start + offset
+                return message.role === 'user' ? (
+                  <UserMessage
+                    key={message.id}
+                    sessionId={session.id}
+                    message={message}
+                    retryUploadId={uploadRetryId}
+                    isFirst={index === 0}
+                    isLast={index === lastIndex || index === lastIndex - 1}
+                    busy={streaming}
+                    versions={versions.get(message.id) ?? EMPTY_VERSIONS}
+                    onSelectVersion={selectVersion}
+                  />
+                ) : (
+                  <AssistantMessage
+                    key={message.id}
+                    sessionId={session.id}
+                    message={message}
+                    isLast={index === lastIndex}
+                    streaming={streaming && index === lastIndex}
+                    busy={streaming}
+                    versions={versions.get(message.id) ?? EMPTY_VERSIONS}
+                    onSelectVersion={selectVersion}
+                  />
+                )
+              })}
+            </div>
           </div>
+          {android && isMobile && showJumpToBottom ? (
+            <button
+              type="button"
+              className={styles.jumpToBottom}
+              aria-label={t('jumpToBottom')}
+              tabIndex={-1}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={jumpToBottom}
+            >
+              <span className={styles.jumpToBottomIcon}>
+                <IconChevronDownOutline14 />
+              </span>
+            </button>
+          ) : null}
         </div>
         {footer}
       </div>

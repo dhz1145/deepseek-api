@@ -12,11 +12,16 @@ import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.graphics.Rect;
+import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.provider.Settings;
+import android.view.View;
+import android.view.accessibility.AccessibilityManager;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.webkit.JavascriptInterface;
 import android.webkit.MimeTypeMap;
 import android.webkit.ValueCallback;
@@ -30,7 +35,10 @@ import android.widget.FrameLayout;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -65,6 +73,11 @@ public final class MainActivity extends Activity {
     private final InAppBackCallback inAppBack = new InAppBackCallback(this, this::handleBack,
         this::reportBackPreview);
     private final ExecutorService photoExecutor = Executors.newSingleThreadExecutor();
+    private AccessibilityManager accessibility;
+    private final AccessibilityManager.AccessibilityStateChangeListener accessibilityState =
+        enabled -> {
+            if (enabled) primeAccessibility();
+        };
 
     @Override
     public void onCreate(Bundle state) {
@@ -98,6 +111,10 @@ public final class MainActivity extends Activity {
             }
         });
         setContentView(frame);
+        accessibility = getSystemService(AccessibilityManager.class);
+        if (accessibility != null) {
+            accessibility.addAccessibilityStateChangeListener(accessibilityState);
+        }
         setBars((getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
             == Configuration.UI_MODE_NIGHT_YES);
         WebView.setWebContentsDebuggingEnabled(
@@ -118,6 +135,13 @@ public final class MainActivity extends Activity {
             webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('android-update', {detail: "
                 + status + "}))", null));
         webView.loadUrl(HOME);
+    }
+
+    private void primeAccessibility() {
+        if (webView == null) return;
+        webView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+        AccessibilityNodeInfo host = webView.createAccessibilityNodeInfo();
+        if (host != null) host.recycle();
     }
 
     @Override
@@ -163,6 +187,14 @@ public final class MainActivity extends Activity {
             apiTransport.cancelAll();
             backPreviewEnabled = false;
             inAppBack.setEnabled(false);
+        }
+
+        @Override
+        public void onPageFinished(WebView view, String url) {
+            super.onPageFinished(view, url);
+            if (accessibility != null && accessibility.isEnabled()) {
+                primeAccessibility();
+            }
         }
 
         @Override
@@ -422,6 +454,9 @@ public final class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         inAppBack.setEnabled(false);
+        if (accessibility != null) {
+            accessibility.removeAccessibilityStateChangeListener(accessibilityState);
+        }
         photoExecutor.shutdownNow();
         apiTransport.shutdown();
         updater.close();
@@ -457,6 +492,12 @@ public final class MainActivity extends Activity {
         public float systemFontScale() { return getResources().getConfiguration().fontScale; }
 
         @JavascriptInterface
+        public int getMusicVolume() {
+            AudioManager audio = getSystemService(AudioManager.class);
+            return audio == null ? -1 : audio.getStreamVolume(AudioManager.STREAM_MUSIC);
+        }
+
+        @JavascriptInterface
         public void openAppPermissions() {
             runOnUiThread(() -> startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                 Uri.fromParts("package", getPackageName(), null))));
@@ -472,12 +513,15 @@ public final class MainActivity extends Activity {
         public void installUpdate() { runOnUiThread(() -> updater.update()); }
 
         @JavascriptInterface
-        public void openSourcePage(String url, boolean dark, String closeLabel, String browserLabel) {
+        public void openSourcePage(String url, boolean dark, String closeLabel, String browserLabel,
+                                   String loadingLabel, String errorLabel, String retryLabel) {
             Uri uri = SourceBrowserActivity.webUri(url);
             if (uri == null) return;
             runOnUiThread(() -> startActivity(new Intent(MainActivity.this, SourceBrowserActivity.class)
                 .setData(uri).putExtra("dark", dark)
-                .putExtra("closeLabel", closeLabel).putExtra("browserLabel", browserLabel)));
+                .putExtra("closeLabel", closeLabel).putExtra("browserLabel", browserLabel)
+                .putExtra("loadingLabel", loadingLabel).putExtra("errorLabel", errorLabel)
+                .putExtra("retryLabel", retryLabel)));
         }
 
         @JavascriptInterface
@@ -569,5 +613,47 @@ public final class MainActivity extends Activity {
 
         @JavascriptInterface
         public double recordingLevel() { return recorder.level(); }
+
+        @JavascriptInterface
+        public void setSelectionExclusion(
+            float startLeft,
+            float startTop,
+            float startRight,
+            float startBottom,
+            float endLeft,
+            float endTop,
+            float endRight,
+            float endBottom,
+            boolean active
+        ) {
+            runOnUiThread(() -> {
+                if (webView == null) return;
+                if (!active) {
+                    webView.setSystemGestureExclusionRects(Collections.emptyList());
+                    return;
+                }
+                float density = getResources().getDisplayMetrics().density;
+                List<Rect> rects = new ArrayList<>(2);
+                int w = webView.getWidth();
+                int h = webView.getHeight();
+                if (startRight > startLeft && startBottom > startTop) {
+                    rects.add(new Rect(
+                        Math.max(0, Math.round(startLeft * density)),
+                        Math.max(0, Math.round(startTop * density)),
+                        Math.min(w, Math.round(startRight * density)),
+                        Math.min(h, Math.round(startBottom * density))
+                    ));
+                }
+                if (endRight > endLeft && endBottom > endTop) {
+                    rects.add(new Rect(
+                        Math.max(0, Math.round(endLeft * density)),
+                        Math.max(0, Math.round(endTop * density)),
+                        Math.min(w, Math.round(endRight * density)),
+                        Math.min(h, Math.round(endBottom * density))
+                    ));
+                }
+                webView.setSystemGestureExclusionRects(rects);
+            });
+        }
     }
 }

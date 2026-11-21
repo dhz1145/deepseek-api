@@ -489,6 +489,15 @@
   padding-inline: 17px;
 }
 
+[data-android] .mirror,
+[data-android] .textarea {
+  overflow-wrap: anywhere;
+}
+
+[data-android] .mirror {
+  max-height: calc(var(--line-height) * 7 + var(--input-padding-top));
+}
+
 [data-android] .textarea {
   touch-action: pan-y;
 }

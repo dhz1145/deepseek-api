@@ -10,7 +10,10 @@ export const openAndroidPage = (url: string, { showBrowserAction = true } = {}) 
     url,
     document.body.hasAttribute('data-ds-dark-theme'),
     translate('close'),
-    showBrowserAction ? translate('openInBrowser') : ''
+    showBrowserAction ? translate('openInBrowser') : '',
+    translate('pageLoading'),
+    translate('pageLoadFailed'),
+    translate('retry')
   )
   return true
 }

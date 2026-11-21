@@ -200,6 +200,9 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const focusComposer = useCallback(() => {
     setShowAttachments(false)
     useVoiceMode.setState({ enabled: false })
+    if (android) {
+      setTyping(true)
+    }
     requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }))
   }, [])
 
@@ -218,7 +221,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
 
   // 排队、上传中或上传失败的附件都留在输入框，全部上传成功后才能发送
   const canSend = !importingHistory && !streaming && voice.status === 'idle' && draftReady
-  const showSend = !android || streaming || draftReady
+  const showSend = !android || streaming || draftReady || typing
 
   useAndroidBackInterception(showAttachments)
   useEffect(() => {
@@ -235,6 +238,28 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
     window.addEventListener('android-back', closeOnBack)
     return () => window.removeEventListener('android-back', closeOnBack)
   }, [showAttachments])
+
+  useEffect(() => {
+    if (!android) {
+      return
+    }
+    const root = document.documentElement
+    const observer = new MutationObserver(() => {
+      const textarea = textareaRef.current
+      if (!root.hasAttribute('data-keyboard') && document.activeElement === textarea) {
+        textarea?.blur()
+      }
+    })
+    observer.observe(root, { attributes: true, attributeFilter: ['data-keyboard'] })
+    return () => observer.disconnect()
+  }, [])
+
+  useLayoutEffect(() => {
+    if (!android || !typing) {
+      return
+    }
+    textareaRef.current?.focus({ preventScroll: true })
+  }, [typing])
 
   const send = () => {
     if (
@@ -257,6 +282,8 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
     }
   }
 
+  const photoSuggestions = !!android && !text.trim() && attachments.some((item) => item.isImage)
+
   return (
     <div className={styles.composer}>
       <div
@@ -268,14 +295,14 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
         )}
         onClick={(event) => {
           if (event.target === event.currentTarget) {
-            textareaRef.current?.focus({ preventScroll: true })
+            focusComposer()
           }
         }}
       >
         {android ? (
           <AndroidDraftAttachments
             items={attachments}
-            suggestions={!text.trim() && attachments.some((item) => item.isImage)}
+            suggestions={photoSuggestions}
             loading={imagesUploading}
             localOnly={customEndpoint}
             canSend={canSend}
@@ -301,7 +328,14 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
             onRemove={removeFile}
           />
         )}
-        <div className={styles.textareaWrapper}>
+        <div
+          className={styles.textareaWrapper}
+          onClick={(event) => {
+            if (android && event.target === event.currentTarget) {
+              focusComposer()
+            }
+          }}
+        >
           {android && voiceMode ? (
             <button
               type="button"
@@ -362,8 +396,15 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
                   event.currentTarget.focus({ preventScroll: true })
                 }
               }}
+              enterKeyHint={android || isMobile ? 'enter' : undefined}
               onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                if (
+                  !android &&
+                  !isMobile &&
+                  event.key === 'Enter' &&
+                  !event.shiftKey &&
+                  !event.nativeEvent.isComposing
+                ) {
                   event.preventDefault()
                   send()
                 }
@@ -431,12 +472,12 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
                     setShowAttachments(!showAttachments)
                   }}
                 />
-                {draftReady && (attachments.length === 0 || text.trim()) ? null : (
+                {typing || (draftReady && (attachments.length === 0 || text.trim())) ? null : (
                   <IconButton
                     size="xl"
                     tone="primary"
-                    icon={<AndroidCircle icon={voiceMode ? 'keys' : 'voice'} />}
-                    aria-label={t(voiceMode ? 'androidTextMode' : 'voiceInput')}
+                      icon={<AndroidCircle icon={voiceMode ? 'keys' : 'voice'} />}
+                    aria-label={t(voiceMode ? 'androidTextMode' : 'androidVoiceMode')}
                     aria-pressed={voiceMode}
                     onClick={() => {
                       if (!voiceMode && !ensureApiKey()) {
@@ -444,6 +485,9 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
                       }
                       voice.cancel()
                       useVoiceMode.setState({ enabled: !voiceMode })
+                      if (voiceMode) {
+                        focusComposer()
+                      }
                     }}
                   />
                 )}
@@ -502,6 +546,11 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
                 className={clsx(styles.sendButton, !canSend && styles.disabled)}
                 aria-label={t('send')}
                 aria-disabled={!canSend}
+                onPointerDown={(event) => {
+                  if (android && !canSend) {
+                    event.preventDefault()
+                  }
+                }}
                 onClick={send}
               >
                 <IconSendOutline16 />
@@ -524,9 +573,12 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
             }
             onRecentFile={(file, photoId) => acceptFiles([file], photoId)}
             onRemove={removeFile}
-            onFiles={(files) => {
+            onFiles={(files, source) => {
               setShowAttachments(false)
               acceptFiles(files)
+              if (source === 'gallery') {
+                focusComposer()
+              }
             }}
           />
           <AndroidVoiceOverlay

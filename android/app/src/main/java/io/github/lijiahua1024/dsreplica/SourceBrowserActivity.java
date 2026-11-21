@@ -10,18 +10,24 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.net.Uri;
+import android.net.http.SslError;
 import android.os.Bundle;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
+import android.webkit.SslErrorHandler;
 import android.webkit.WebBackForwardList;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 
 /** A separate WebView keeps external pages away from the application's JavaScript bridge. */
@@ -29,6 +35,13 @@ public final class SourceBrowserActivity extends Activity {
     private WebView page;
     private LinearLayout root;
     private final InAppBackCallback inAppBack = new InAppBackCallback(this, this::goBack);
+    private FrameLayout content;
+    private LinearLayout loading;
+    private LinearLayout failure;
+    private TextView failureMessage;
+    private Uri initial;
+    private Uri failedUrl;
+    private boolean failed;
 
     static Uri webUri(String value) {
         if (value == null) return null;
@@ -45,7 +58,7 @@ public final class SourceBrowserActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-        Uri initial = webUri(getIntent().getDataString());
+        initial = webUri(getIntent().getDataString());
         if (initial == null) {
             finish();
             return;
@@ -97,6 +110,7 @@ public final class SourceBrowserActivity extends Activity {
         divider.setBackgroundColor(Color.parseColor(dark ? "#373737" : "#E5E5E5"));
         root.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
 
+        content = new FrameLayout(this);
         page = new WebView(this);
         page.setBackgroundColor(Color.WHITE);
         WebSettings settings = page.getSettings();
@@ -120,17 +134,102 @@ public final class SourceBrowserActivity extends Activity {
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                return webUri(request.getUrl().toString()) == null;
+                Uri target = webUri(request.getUrl().toString());
+                if (target == null) return true;
+                if (request.isForMainFrame()) showLoading();
+                return false;
+            }
+
+            @Override
+            public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                showLoading();
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                if (!failed) {
+                    view.postDelayed(() -> {
+                        if (!failed) hideLoading();
+                    }, 3000);
+                }
+            }
+
+            @Override
+            public void onPageCommitVisible(WebView view, String url) {
+                if (!failed) hideLoading();
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request,
+                                        WebResourceError error) {
+                if (request.isForMainFrame()) showFailure(request.getUrl());
+            }
+
+            @Override
+            public void onReceivedHttpError(WebView view, WebResourceRequest request,
+                                            WebResourceResponse response) {
+                if (request.isForMainFrame() && response.getStatusCode() >= 400) {
+                    showFailure(request.getUrl());
+                }
+            }
+
+            @Override
+            public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
+                handler.cancel();
+                showFailure(Uri.parse(error.getUrl()));
             }
         });
-        root.addView(page, new LinearLayout.LayoutParams(-1, 0, 1));
+        content.addView(page, new FrameLayout.LayoutParams(-1, -1));
+
+        loading = new LinearLayout(this);
+        loading.setOrientation(LinearLayout.VERTICAL);
+        loading.setGravity(Gravity.CENTER);
+        loading.setBackgroundColor(background);
+        ProgressBar spinner = new ProgressBar(this);
+        loading.addView(spinner, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        TextView loadingLabel = new TextView(this);
+        loadingLabel.setText(getLabel("loadingLabel", "Loading..."));
+        loadingLabel.setTextColor(Color.parseColor(dark ? "#B8B8B8" : "#666666"));
+        loadingLabel.setTextSize(14);
+        loadingLabel.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams loadingLabelLayout = new LinearLayout.LayoutParams(-2, -2);
+        loadingLabelLayout.topMargin = dp(12);
+        loading.addView(loadingLabel, loadingLabelLayout);
+        content.addView(loading, new FrameLayout.LayoutParams(-1, -1));
+
+        failure = new LinearLayout(this);
+        failure.setOrientation(LinearLayout.VERTICAL);
+        failure.setGravity(Gravity.CENTER);
+        failure.setBackgroundColor(background);
+        failure.setPadding(dp(32), dp(32), dp(32), dp(32));
+        failure.setVisibility(View.GONE);
+        failureMessage = new TextView(this);
+        failureMessage.setTextColor(foreground);
+        failureMessage.setTextSize(15);
+        failureMessage.setGravity(Gravity.CENTER);
+        failure.addView(failureMessage, new LinearLayout.LayoutParams(-1, -2));
+        Button retry = new Button(this);
+        retry.setText(getLabel("retryLabel", "Retry"));
+        retry.setOnClickListener(view -> {
+            Uri target = failedUrl != null ? failedUrl : initial;
+            showLoading();
+            page.loadUrl(target.toString());
+        });
+        LinearLayout.LayoutParams retryLayout = new LinearLayout.LayoutParams(-2, -2);
+        retryLayout.topMargin = dp(20);
+        failure.addView(retry, retryLayout);
+        content.addView(failure, new FrameLayout.LayoutParams(-1, -1));
+
+        root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(root);
         SystemBars.setAppearance(getWindow(), dark);
         WebBackForwardList history = state == null ? null : page.restoreState(state);
         if (history == null) {
+            showLoading();
             page.loadUrl(initial.toString());
         } else if (history.getCurrentItem() != null) {
             title.setText(history.getCurrentItem().getTitle());
+            hideLoading();
         }
         inAppBack.setEnabled(page.canGoBack());
     }
@@ -144,6 +243,34 @@ public final class SourceBrowserActivity extends Activity {
     private void goBack() {
         if (page != null && page.canGoBack()) page.goBack();
         else finish();
+    }
+
+    private String getLabel(String key, String fallback) {
+        String value = getIntent().getStringExtra(key);
+        return TextUtils.isEmpty(value) ? fallback : value;
+    }
+
+    private void showLoading() {
+        if (loading == null) return;
+        failed = false;
+        page.setVisibility(View.VISIBLE);
+        failure.setVisibility(View.GONE);
+        loading.setVisibility(View.VISIBLE);
+    }
+
+    private void hideLoading() {
+        if (loading == null) return;
+        loading.setVisibility(View.GONE);
+    }
+
+    private void showFailure(Uri url) {
+        if (failure == null) return;
+        failed = true;
+        failedUrl = webUri(url == null ? null : url.toString());
+        failureMessage.setText(getLabel("errorLabel", "Unable to load this page. Please try again."));
+        page.setVisibility(View.INVISIBLE);
+        loading.setVisibility(View.GONE);
+        failure.setVisibility(View.VISIBLE);
     }
 
     @Override

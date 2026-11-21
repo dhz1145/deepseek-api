@@ -54,8 +54,32 @@
   margin-right: -4px;
   padding-block: 10px;
   border-radius: 22px 22px 4px 22px;
-  line-height: 26px;
+  font-size: calc(16px * var(--android-chat-font-scale, 1));
+  line-height: calc(26px * var(--android-chat-font-scale, 1));
+  isolation: isolate;
   user-select: none;
+}
+
+.bubbleText {
+  display: inline-block;
+  max-width: 100%;
+  position: relative;
+  z-index: 1;
+  line-height: inherit;
+  vertical-align: top;
+}
+
+.menuAnchor {
+  position: absolute;
+  top: 100%;
+  right: -3.5556px;
+  width: 0;
+  height: 0;
+}
+
+.menuCopyIcon {
+  display: flex;
+  transform: scaleY(1.05);
 }
 
 .menuTrigger {
