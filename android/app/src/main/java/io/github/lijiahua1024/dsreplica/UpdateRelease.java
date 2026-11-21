@@ -38,6 +38,8 @@ record UpdateRelease(String version, URL url, URL assetApi, long size, String di
     private static final String LATEST = RELEASES_API + "/latest";
     private static final String DOWNLOAD = "https://github.com/" + REPOSITORY + "/releases/download/";
     private static final String PAGES = "https://dhz1145.github.io/deepseek-api/updates/";
+    private static final String R2 = BuildConfig.R2_UPDATE_ORIGIN.isEmpty()
+        ? "" : BuildConfig.R2_UPDATE_ORIGIN + "/updates/";
     private static final Pattern VERSION = Pattern.compile("(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})");
     private static final long MAX_APK = 256L * 1024 * 1024;
 
@@ -45,14 +47,41 @@ record UpdateRelease(String version, URL url, URL assetApi, long size, String di
         return firstUsable(
             () -> fromGitHub(readJson(LATEST, "application/vnd.github+json", 5000, 6000, 512 * 1024),
                 installedVersion),
-            () -> fromPages(readJson(PAGES + "latest.json", "application/json", 3500, 4500, 4096),
-                installedVersion),
+            () -> {
+                Lookup pages = () -> fromMirror(PAGES, installedVersion, 3500, 4500);
+                return R2.isEmpty() ? pages.run() : preferredMirror(
+                    () -> fromMirror(R2, installedVersion, 1800, 2000), pages);
+            },
             12_000, 1000);
     }
 
     @FunctionalInterface
     interface Lookup {
         UpdateRelease run() throws IOException, JSONException;
+    }
+
+    static UpdateRelease preferredMirror(Lookup r2, Lookup pages) throws IOException, JSONException {
+        Exception r2Failure = null;
+        try {
+            UpdateRelease release = r2.run();
+            if (release != null) return release;
+        } catch (IOException | JSONException failure) {
+            r2Failure = failure;
+        }
+        // R2 may be cached or behind Pages. Do not hide an update from the fallback.
+        try {
+            return pages.run();
+        } catch (IOException | JSONException failure) {
+            if (r2Failure == null) return null;
+            failure.addSuppressed(r2Failure);
+            throw failure;
+        }
+    }
+
+    private static UpdateRelease fromMirror(String base, String installedVersion, int connectMs, int readMs)
+        throws IOException, JSONException {
+        return fromMirrorManifest(readJson(base + "latest.json", "application/json", connectMs, readMs, 4096),
+            installedVersion);
     }
 
     private record LookupResult(boolean github, UpdateRelease release, IOException failure) {}
@@ -62,7 +91,7 @@ record UpdateRelease(String version, URL url, URL assetApi, long size, String di
             return new LookupResult(github, source.run(), null);
         } catch (IOException | JSONException failure) {
             return new LookupResult(github, null, new IOException(
-                (github ? "GitHub" : "Pages") + " lookup failed", failure));
+                (github ? "GitHub" : "Mirror") + " lookup failed", failure));
         }
     }
 
@@ -155,7 +184,7 @@ record UpdateRelease(String version, URL url, URL assetApi, long size, String di
         throw new IOException("No verifiable APK for the latest release");
     }
 
-    static UpdateRelease fromPages(JSONObject manifest, String installedVersion) throws IOException, JSONException {
+    static UpdateRelease fromMirrorManifest(JSONObject manifest, String installedVersion) throws IOException, JSONException {
         if (manifest.getInt("schema") != 1) throw new IOException("Unexpected update manifest schema");
         String tag = manifest.getString("tag");
         UpdateRelease release = verifiedMetadata(tag, manifest.getLong("assetId"), manifest.getLong("size"),
@@ -193,8 +222,13 @@ record UpdateRelease(String version, URL url, URL assetApi, long size, String di
     }
 
     void download(File file, IntConsumer progress) throws IOException, InvalidApk {
-        URL mirror = new URL(PAGES + apkName("v" + version));
-        download(file, progress, mirror, assetApi, url);
+        String name = apkName("v" + version);
+        URL pages = new URL(PAGES + name);
+        if (R2.isEmpty()) {
+            download(file, progress, pages, assetApi, url);
+        } else {
+            download(file, progress, new URL(R2 + name), pages, assetApi, url);
+        }
     }
 
     void download(File file, IntConsumer progress, URL... sources) throws IOException, InvalidApk {
@@ -223,10 +257,11 @@ record UpdateRelease(String version, URL url, URL assetApi, long size, String di
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException(impossible);
         }
-        boolean pages = source.toString().startsWith(PAGES);
+        boolean mirror = source.toString().startsWith(PAGES)
+            || (!R2.isEmpty() && source.toString().startsWith(R2));
         URL next = source;
         for (int redirect = 0; redirect < 5; redirect++) {
-            HttpsURLConnection connection = connect(next, pages ? 3500 : 8000, pages ? 6000 : 12000);
+            HttpsURLConnection connection = connect(next, mirror ? 3500 : 8000, mirror ? 6000 : 12000);
             try {
                 connection.setRequestProperty("Accept", "application/octet-stream");
                 int status = connection.getResponseCode();
@@ -241,7 +276,7 @@ record UpdateRelease(String version, URL url, URL assetApi, long size, String di
                     return;
                 }
                 String location = connection.getHeaderField("Location");
-                if (pages || status < 300 || status >= 400 || location == null) break;
+                if (mirror || status < 300 || status >= 400 || location == null) break;
                 next = new URL(next, location);
                 if (!"release-assets.githubusercontent.com".equalsIgnoreCase(next.getHost())
                     && !"objects.githubusercontent.com".equalsIgnoreCase(next.getHost())) break;

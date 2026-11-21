@@ -30,23 +30,23 @@ public class UpdateReleaseTest {
     }
 
     private static UpdateRelease candidate(String tag) throws Exception {
-        return UpdateRelease.fromPages(manifest(tag), "0.7.2");
+        return UpdateRelease.fromMirrorManifest(manifest(tag), "0.7.2");
     }
 
     private static UpdateRelease unavailable() throws IOException { throw new IOException("offline"); }
 
     @Test public void mirrorContainsOnlyValidatedMetadata() throws Exception {
-        UpdateRelease release = UpdateRelease.fromPages(manifest("v0.7.3").put("url", "https://other.invalid"), "0.7.2");
+        UpdateRelease release = UpdateRelease.fromMirrorManifest(manifest("v0.7.3").put("url", "https://other.invalid"), "0.7.2");
         assertEquals("0.7.3", release.version());
         assertEquals("https://github.com/dhz1145/deepseek-api/releases/download/v0.7.3/deepseek-api-v0.7.3.apk",
             release.url().toString());
         assertEquals("https://api.github.com/repos/dhz1145/deepseek-api/releases/assets/123", release.assetApi().toString());
-        assertNull(UpdateRelease.fromPages(manifest("v0.7.2"), "0.7.2"));
-        assertNull(UpdateRelease.fromPages(manifest("v0.7.1"), "0.7.2"));
-        assertThrows(IOException.class, () -> UpdateRelease.fromPages(manifest("v0.7.3-rc1"), "0.7.2"));
-        assertThrows(IOException.class, () -> UpdateRelease.fromPages(manifest("v0.7.3").put("sha256", "bad"), "0.7.2"));
-        assertThrows(IOException.class, () -> UpdateRelease.fromPages(manifest("v0.7.3").put("size", 0), "0.7.2"));
-        assertThrows(IOException.class, () -> UpdateRelease.fromPages(manifest("v0.7.3").put("schema", 2), "0.7.2"));
+        assertNull(UpdateRelease.fromMirrorManifest(manifest("v0.7.2"), "0.7.2"));
+        assertNull(UpdateRelease.fromMirrorManifest(manifest("v0.7.1"), "0.7.2"));
+        assertThrows(IOException.class, () -> UpdateRelease.fromMirrorManifest(manifest("v0.7.3-rc1"), "0.7.2"));
+        assertThrows(IOException.class, () -> UpdateRelease.fromMirrorManifest(manifest("v0.7.3").put("sha256", "bad"), "0.7.2"));
+        assertThrows(IOException.class, () -> UpdateRelease.fromMirrorManifest(manifest("v0.7.3").put("size", 0), "0.7.2"));
+        assertThrows(IOException.class, () -> UpdateRelease.fromMirrorManifest(manifest("v0.7.3").put("schema", 2), "0.7.2"));
     }
 
     @Test public void onlyStableOwnGitHubAssetIsAccepted() throws Exception {
@@ -98,16 +98,30 @@ public class UpdateReleaseTest {
         }, () -> stable, 2500, 40));
     }
 
+    @Test public void r2MetadataHasPriorityAndPagesRecoversFromAnUnavailableOrStaleR2() throws Exception {
+        UpdateRelease r2 = candidate("v0.7.4");
+        UpdateRelease pages = candidate("v0.7.3");
+        assertSame(r2, UpdateRelease.preferredMirror(() -> r2, () -> {
+            throw new AssertionError("Healthy R2 should not require a Pages lookup");
+        }));
+        assertSame(pages, UpdateRelease.preferredMirror(UpdateReleaseTest::unavailable, () -> pages));
+        assertSame(pages, UpdateRelease.preferredMirror(() -> null, () -> pages));
+        assertNull(UpdateRelease.preferredMirror(() -> null, UpdateReleaseTest::unavailable));
+        assertThrows(IOException.class, () -> UpdateRelease.preferredMirror(UpdateReleaseTest::unavailable,
+            UpdateReleaseTest::unavailable));
+    }
+
     @Test public void mirrorFailureOrWrongBytesFallBackToVerifiedRelease() throws Exception {
         UpdateRelease stable = candidate("v0.7.3");
         List<String> requests = new ArrayList<>();
+        URL limited = fake("https://updates.example.com/updates/deepseek-api-v0.7.3.apk", 429, "", requests);
         URL missing = fake("https://dhz1145.github.io/deepseek-api/updates/missing.apk", 404, "", requests);
         URL invalid = fake("https://dhz1145.github.io/deepseek-api/updates/invalid.apk", 200, "wrong", requests);
         URL clean = fake("https://api.github.com/releases/assets/123", 200, "hello", requests);
         File apk = File.createTempFile("update-test-", ".apk");
         try {
-            stable.download(apk, value -> {}, missing, invalid, clean);
-            assertEquals(List.of(missing.toString(), invalid.toString(), clean.toString()), requests);
+            stable.download(apk, value -> {}, limited, missing, invalid, clean);
+            assertEquals(List.of(limited.toString(), missing.toString(), invalid.toString(), clean.toString()), requests);
             assertEquals("hello", Files.readString(apk.toPath()));
             assertThrows(UpdateRelease.InvalidApk.class, () -> stable.download(apk, value -> {}, invalid));
             assertThrows(IOException.class, () -> stable.download(apk, value -> {}, missing));

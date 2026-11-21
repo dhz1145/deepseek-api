@@ -83,6 +83,14 @@ pwsh -File scripts/publish-release.ps1 -Notes '填写本次更新说明'
 
 正式 Release 发布后，Actions 中的 `Publish Android update mirror` 会校验 APK 的大小及 SHA-256，再将 APK 和版本清单一起部署到本仓库的 GitHub Pages。镜像部署可能晚于 Release；部署失败可在 Actions 里从 `main` 手动运行该工作流（`package.json` 的版本须与最新正式 Release 一致）。仓库的 Pages 发布源须设为 GitHub Actions，`github-pages` 部署环境须允许 `main` 分支和 `v*` 版本标签。
 
+### Cloudflare R2 更新镜像
+
+v0.7.6 起，Android 可以直接从本项目的 R2 镜像检查和下载更新；镜像异常时仍可使用 GitHub Pages / Releases。v0.7.5 及更早版本需先从原渠道更新一次。当前小规模使用已有 `r2.dev` 入口；它有限流，不保证所有网络可访问，长期使用建议绑定自定义域名。
+
+如需启用自动同步，在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 设置 `R2_UPDATE_ORIGIN`（HTTPS 域名，不带 `/updates`）、`R2_ACCOUNT_ID`、`R2_BUCKET`，并把仅对此桶有对象读写权限的 R2 凭证存为 `R2_ACCESS_KEY_ID` 和 `R2_SECRET_ACCESS_KEY` 两个 Secrets。发布脚本会用 `R2_UPDATE_ORIGIN` 覆盖默认地址。Actions 从正式 Release 下载并校验 APK，上传后再从公网验证一次，最后更新 `latest.json`；R2 自动同步与 Pages 部署互不阻塞。
+
+未配置自动同步时，可用 `python scripts/build-update-mirror.py <输出目录>` 生成与已发布正式版一致的镜像文件，然后手动上传到 R2 的 `updates/` 下。先上传 APK 并验证公网下载内容，再上传 `latest.json`；不要覆盖同版本 APK。
+
 ### 低版本 Android 回归
 
 在 Android Studio 中启动 API 29 或 API 30 模拟器，保留系统镜像预装的 WebView，安装 Debug APK 并保持 API Key 未配置。将下列命令中的序列号换成 `adb devices` 显示的模拟器序列号。

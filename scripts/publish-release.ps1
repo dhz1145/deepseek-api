@@ -57,7 +57,11 @@ try {
         Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
     if (!$tools) { throw 'Android build-tools with apksigner.bat are required.' }
 
-    Invoke-Program '.\android\gradlew.bat' @('-p', 'android', ':app:assembleRelease', '--console=plain')
+    $r2Origin = Invoke-Program gh @('variable', 'list', '--repo', $repo, '--json', 'name,value',
+        '--jq', '.[] | select(.name == "R2_UPDATE_ORIGIN") | .value')
+    $buildArguments = @('-p', 'android', ':app:assembleRelease', '--console=plain')
+    if ($r2Origin) { $buildArguments += "-Pr2UpdateOrigin=$r2Origin" }
+    Invoke-Program '.\android\gradlew.bat' $buildArguments
     $directory = (Resolve-Path -LiteralPath 'android/app/build/outputs/apk/release').Path
     $apk = Join-Path $directory "deepseek-api-$tag.apk"
     Copy-Item -LiteralPath (Join-Path $directory 'app-release.apk') -Destination $apk

@@ -5,6 +5,12 @@ plugins {
 def webProject = rootProject.projectDir.parentFile
 def appVersion = new groovy.json.JsonSlurper().parse(new File(webProject, 'package.json')).version
 
+// The current public mirror serves the small deployment. Allow a production domain override.
+def r2UpdateOrigin = providers.gradleProperty('r2UpdateOrigin').getOrElse('https://pub-1e6bcf9fa6774ec59254384689fadd5a.r2.dev').trim().replaceFirst('/+$', '')
+if (r2UpdateOrigin && !(r2UpdateOrigin ==~ /https:\/\/[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/)) {
+    throw new GradleException('r2UpdateOrigin must be an HTTPS origin without a path or query.')
+}
+
 def releaseSigning = new Properties()
 def releaseSigningFile = rootProject.file('keystore.properties')
 if (releaseSigningFile.isFile()) {
@@ -19,11 +25,16 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     defaultConfig {
+        buildConfigField 'String', 'R2_UPDATE_ORIGIN', groovy.json.JsonOutput.toJson(r2UpdateOrigin)
         applicationId = 'io.github.dhz1145.dsapi'
         minSdk = 29
         targetSdk = 36
-        versionCode = 21
+        versionCode = 22
         versionName = appVersion
     }
 

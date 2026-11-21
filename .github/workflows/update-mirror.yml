@@ -47,3 +47,33 @@ jobs:
       - name: Deploy the mirror
         id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+
+  r2:
+    if: >-
+      github.repository == 'dhz1145/deepseek-api' &&
+      (github.event_name == 'release' || github.ref == 'refs/heads/main') &&
+      vars.R2_UPDATE_ORIGIN != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Prepare the verified APK and small update manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/build-update-mirror.py "$RUNNER_TEMP/r2-site"
+      - name: Publish to R2 without affecting GitHub Pages
+        env:
+          R2_UPDATE_ORIGIN: ${{ vars.R2_UPDATE_ORIGIN }}
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+          AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
+        run: bash scripts/publish-r2-mirror.sh "$RUNNER_TEMP/r2-site/updates"
