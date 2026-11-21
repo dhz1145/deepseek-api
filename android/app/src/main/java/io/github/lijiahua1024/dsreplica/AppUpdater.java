@@ -90,7 +90,7 @@ final class AppUpdater {
                     publish(latest == null ? "current" : null, automatic);
                     checkOnForeground();
                 });
-            } catch (IOException | JSONException failure) {
+            } catch (IOException failure) {
                 Log.w(TAG, "Release lookup failed: " + failure.getClass().getSimpleName());
                 post(() -> {
                     busy = false;

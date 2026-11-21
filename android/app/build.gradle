@@ -23,7 +23,7 @@ android {
         applicationId = 'io.github.dhz1145.dsapi'
         minSdk = 29
         targetSdk = 36
-        versionCode = 19
+        versionCode = 20
         versionName = appVersion
     }
 
@@ -41,6 +41,11 @@ android {
             signingConfig signingConfigs.release
         }
     }
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
 }
 
 def webOutput = new File(webProject, 'dist')

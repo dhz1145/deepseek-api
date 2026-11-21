@@ -22,9 +22,9 @@
 
 ## 下载与安装
 
-请前往 [GitHub Releases](https://github.com/dhz1145/deepseek-api/releases) 页面获取最新发布的 APK 文件，安装至 Android 设备即可使用。
+可从[备用下载页](https://dhz1145.github.io/deepseek-api/)或 [GitHub Releases](https://github.com/dhz1145/deepseek-api/releases) 获取最新 APK。旧版（v0.7.2 及以前）如果在应用内下载较慢，可从备用页下载后覆盖安装，无需卸载。
 
-安装本仓库发布的签名 APK 后，应用进入前台时会自动检查本仓库的新版本，发现更新会弹窗提醒。也可以在「设置 → 检查更新」手动检查。下载后由 Android 系统确认安装；如有提示，请为 DeepSeek API 开启「允许安装未知应用」。应用不会静默安装，也不会自动推送通知。
+安装本仓库发布的签名 APK 后，应用进入前台时会自动检查本仓库的新版本，发现更新会弹窗提醒。也可以在「设置 → 检查更新」手动检查。下载后由 Android 系统确认安装；如有提示，请为 DeepSeek API 开启「允许安装未知应用」。应用不会静默安装，也不会自动推送通知。v0.7.3 起会并行查询本仓库的 GitHub Pages 轻量清单和 GitHub Releases，并优先从 Pages 下载 APK，失败则回退到 Releases。两个渠道均不经过第三方代理，实际速度取决于所在网络。
 
 > 之前通过调试 APK 安装的版本与正式版签名不同，不能直接覆盖。请先在旧版导出聊天记录，卸载旧版，再安装正式版。卸载会清除本地设置，API Key 需重新输入。
 
@@ -80,6 +80,8 @@ pwsh -File scripts/publish-release.ps1 -Notes '填写本次更新说明'
 ```
 
 脚本先生成并检查正式签名 APK，再通过 Git 推送 `main` 和版本标签，并将 `deepseek-api-v<版本>.apk` 发布到本仓库的 GitHub Releases。仅推送源码或创建标签不会向应用提供更新。Android 应用启动或重新进入前台时会检查本仓库的最新正式 Release，发现新版才弹窗，也可以从设置手动检查。草稿或预发行版本不作为更新。下载后会校验文件和签名，最后由系统安装器询问是否安装。
+
+正式 Release 发布后，Actions 中的 `Publish Android update mirror` 会校验 APK 的大小及 SHA-256，再将 APK 和版本清单一起部署到本仓库的 GitHub Pages。镜像部署可能晚于 Release；部署失败可在 Actions 里从 `main` 手动重跑该工作流。仓库的 Pages 发布源须设为 GitHub Actions，`github-pages` 部署环境须允许 `main` 分支和 `v*` 版本标签。
 
 ### 低版本 Android 回归
 

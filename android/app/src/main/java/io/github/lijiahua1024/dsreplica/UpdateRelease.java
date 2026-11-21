@@ -5,7 +5,6 @@ import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.Signature;
 import android.os.Build;
-import android.os.SystemClock;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -18,6 +17,13 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.function.IntConsumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -31,54 +37,149 @@ record UpdateRelease(String version, URL url, URL assetApi, long size, String di
     private static final String RELEASES_API = "https://api.github.com/repos/" + REPOSITORY + "/releases";
     private static final String LATEST = RELEASES_API + "/latest";
     private static final String DOWNLOAD = "https://github.com/" + REPOSITORY + "/releases/download/";
+    private static final String PAGES = "https://dhz1145.github.io/deepseek-api/updates/";
     private static final Pattern VERSION = Pattern.compile("(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})");
     private static final long MAX_APK = 256L * 1024 * 1024;
 
-    static UpdateRelease latest(String installedVersion) throws IOException, JSONException {
-        JSONObject release;
-        HttpsURLConnection connection = connect(new URL(LATEST));
+    static UpdateRelease latest(String installedVersion) throws IOException {
+        return firstUsable(
+            () -> fromGitHub(readJson(LATEST, "application/vnd.github+json", 5000, 6000, 512 * 1024),
+                installedVersion),
+            () -> fromPages(readJson(PAGES + "latest.json", "application/json", 3500, 4500, 4096),
+                installedVersion),
+            12_000, 1000);
+    }
+
+    @FunctionalInterface
+    interface Lookup {
+        UpdateRelease run() throws IOException, JSONException;
+    }
+
+    private record LookupResult(boolean github, UpdateRelease release, IOException failure) {}
+
+    private static LookupResult lookup(boolean github, Lookup source) {
         try {
-            connection.setRequestProperty("Accept", "application/vnd.github+json");
+            return new LookupResult(github, source.run(), null);
+        } catch (IOException | JSONException failure) {
+            return new LookupResult(github, null, new IOException(
+                (github ? "GitHub" : "Pages") + " lookup failed", failure));
+        }
+    }
+
+    static UpdateRelease firstUsable(Lookup github, Lookup pages, long timeoutMs, long graceMs)
+        throws IOException {
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CompletionService<LookupResult> replies = new ExecutorCompletionService<>(executor);
+        Future<LookupResult> githubTask = replies.submit(() -> lookup(true, github));
+        Future<LookupResult> pagesTask = replies.submit(() -> lookup(false, pages));
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        LookupResult mirror = null;
+        IOException githubFailure = null;
+        try {
+            for (int remaining = 2; remaining > 0; remaining--) {
+                Future<LookupResult> next = replies.poll(Math.max(0, deadline - System.nanoTime()),
+                    TimeUnit.NANOSECONDS);
+                if (next == null) break;
+                LookupResult result = next.get();
+                if (result.github()) {
+                    if (result.failure() == null) return result.release();
+                    githubFailure = result.failure();
+                } else {
+                    mirror = result;
+                    // A cached "current" answer must not mask a newer GitHub Release.
+                    // With a usable APK, give GitHub a short chance to supersede a stale mirror.
+                    if (mirror.release() != null) {
+                        deadline = Math.min(deadline, System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(graceMs));
+                    }
+                }
+            }
+            if (mirror != null && mirror.failure() == null) return mirror.release();
+            IOException failure = new IOException("No reachable update metadata source");
+            if (githubFailure != null) failure.addSuppressed(githubFailure);
+            if (mirror != null && mirror.failure() != null) failure.addSuppressed(mirror.failure());
+            throw failure;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Update check interrupted", interrupted);
+        } catch (ExecutionException failed) {
+            throw new IOException("Update check failed", failed.getCause());
+        } finally {
+            githubTask.cancel(true);
+            pagesTask.cancel(true);
+            executor.shutdownNow();
+        }
+    }
+
+    private static JSONObject readJson(String url, String accept, int connectMs, int readMs, int maxBytes)
+        throws IOException, JSONException {
+        HttpsURLConnection connection = connect(new URL(url), connectMs, readMs);
+        try {
+            connection.setRequestProperty("Accept", accept);
             if (connection.getResponseCode() != 200) throw new IOException("Release lookup failed");
             try (InputStream input = connection.getInputStream()) {
                 ByteArrayOutputStream body = new ByteArrayOutputStream();
-                byte[] buffer = new byte[8192];
-                long deadline = SystemClock.elapsedRealtime() + 30_000;
+                byte[] buffer = new byte[4096];
+                long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(readMs);
                 for (int count; (count = input.read(buffer)) != -1;) {
                     checkDeadline(deadline);
-                    if (body.size() + count > 512 * 1024) throw new IOException("Release response too large");
+                    if (body.size() + count > maxBytes) throw new IOException("Release response too large");
                     body.write(buffer, 0, count);
                 }
-                release = new JSONObject(new String(body.toByteArray(), StandardCharsets.UTF_8));
+                return new JSONObject(new String(body.toByteArray(), StandardCharsets.UTF_8));
             }
         } finally {
             connection.disconnect();
         }
+    }
 
+    static UpdateRelease fromGitHub(JSONObject release, String installedVersion) throws IOException, JSONException {
         String tag = release.getString("tag_name");
-        if (!tag.startsWith("v") || release.optBoolean("draft") || release.optBoolean("prerelease")) {
-            throw new IOException("Unexpected release tag");
+        if (release.getBoolean("draft") || release.getBoolean("prerelease")) {
+            throw new IOException("Unexpected non-stable release");
         }
-        String version = tag.substring(1);
+        String version = versionFromTag(tag);
         if (compareVersions(version, installedVersion) <= 0) return null;
-        String name = "deepseek-api-" + tag + ".apk";
+        String name = apkName(tag);
         String expectedUrl = DOWNLOAD + tag + "/" + name;
         JSONArray assets = release.getJSONArray("assets");
         for (int i = 0; i < assets.length(); i++) {
             JSONObject asset = assets.getJSONObject(i);
             if (!name.equals(asset.optString("name"))) continue;
-            long size = asset.optLong("size");
-            long id = asset.optLong("id");
             String digest = asset.optString("digest");
-            if ("uploaded".equals(asset.optString("state")) && size > 0 && size <= MAX_APK
-                && expectedUrl.equalsIgnoreCase(asset.optString("browser_download_url"))
-                && digest.matches("sha256:[0-9a-f]{64}")) {
-                URL assetApi = id > 0 ? new URL(RELEASES_API + "/assets/" + id) : null;
-                return new UpdateRelease(version, new URL(expectedUrl), assetApi, size, digest.substring(7));
+            if ("uploaded".equals(asset.optString("state"))
+                && expectedUrl.equals(asset.optString("browser_download_url"))
+                && digest.startsWith("sha256:")) {
+                return verifiedMetadata(tag, asset.optLong("id"), asset.optLong("size"), digest.substring(7));
             }
         }
         throw new IOException("No verifiable APK for the latest release");
     }
+
+    static UpdateRelease fromPages(JSONObject manifest, String installedVersion) throws IOException, JSONException {
+        if (manifest.getInt("schema") != 1) throw new IOException("Unexpected update manifest schema");
+        String tag = manifest.getString("tag");
+        UpdateRelease release = verifiedMetadata(tag, manifest.getLong("assetId"), manifest.getLong("size"),
+            manifest.getString("sha256"));
+        return compareVersions(release.version(), installedVersion) > 0 ? release : null;
+    }
+
+    private static UpdateRelease verifiedMetadata(String tag, long id, long size, String digest) throws IOException {
+        String version = versionFromTag(tag);
+        if (id <= 0 || size <= 0 || size > MAX_APK || !digest.matches("[0-9a-f]{64}")) {
+            throw new IOException("Invalid update asset metadata");
+        }
+        return new UpdateRelease(version, new URL(DOWNLOAD + tag + "/" + apkName(tag)),
+            new URL(RELEASES_API + "/assets/" + id), size, digest);
+    }
+
+    private static String versionFromTag(String tag) throws IOException {
+        if (!tag.startsWith("v") || !VERSION.matcher(tag.substring(1)).matches()) {
+            throw new IOException("Unexpected release tag");
+        }
+        return tag.substring(1);
+    }
+
+    private static String apkName(String tag) { return "deepseek-api-" + tag + ".apk"; }
 
     static int compareVersions(String left, String right) throws IOException {
         Matcher a = VERSION.matcher(left == null ? "" : left);
@@ -92,17 +193,27 @@ record UpdateRelease(String version, URL url, URL assetApi, long size, String di
     }
 
     void download(File file, IntConsumer progress) throws IOException, InvalidApk {
-        // The GitHub website and API have distinct network paths; both serve the same verified asset.
-        if (assetApi != null) {
+        URL mirror = new URL(PAGES + apkName("v" + version));
+        download(file, progress, mirror, assetApi, url);
+    }
+
+    void download(File file, IntConsumer progress, URL... sources) throws IOException, InvalidApk {
+        IOException unavailable = new IOException("APK download failed on all update sources");
+        InvalidApk invalid = null;
+        for (int i = 0; i < sources.length; i++) {
+            if (Thread.currentThread().isInterrupted()) throw new IOException("Update interrupted");
+            if (i > 0) progress.accept(0);
             try {
-                downloadFrom(assetApi, file, progress);
+                downloadFrom(sources[i], file, progress);
                 return;
-            } catch (IOException failed) {
-                if (Thread.currentThread().isInterrupted()) throw failed;
-                progress.accept(0);
+            } catch (InvalidApk failure) {
+                invalid = failure;
+            } catch (IOException failure) {
+                unavailable.addSuppressed(failure);
             }
         }
-        downloadFrom(url, file, progress);
+        if (invalid != null) throw invalid;
+        throw unavailable;
     }
 
     private void downloadFrom(URL source, File file, IntConsumer progress) throws IOException, InvalidApk {
@@ -112,9 +223,10 @@ record UpdateRelease(String version, URL url, URL assetApi, long size, String di
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException(impossible);
         }
+        boolean pages = source.toString().startsWith(PAGES);
         URL next = source;
         for (int redirect = 0; redirect < 5; redirect++) {
-            HttpsURLConnection connection = connect(next);
+            HttpsURLConnection connection = connect(next, pages ? 3500 : 8000, pages ? 6000 : 12000);
             try {
                 connection.setRequestProperty("Accept", "application/octet-stream");
                 int status = connection.getResponseCode();
@@ -129,7 +241,7 @@ record UpdateRelease(String version, URL url, URL assetApi, long size, String di
                     return;
                 }
                 String location = connection.getHeaderField("Location");
-                if (status < 300 || status >= 400 || location == null) break;
+                if (pages || status < 300 || status >= 400 || location == null) break;
                 next = new URL(next, location);
                 if (!"release-assets.githubusercontent.com".equalsIgnoreCase(next.getHost())
                     && !"objects.githubusercontent.com".equalsIgnoreCase(next.getHost())) break;
@@ -147,7 +259,7 @@ record UpdateRelease(String version, URL url, URL assetApi, long size, String di
             byte[] buffer = new byte[32 * 1024];
             long downloaded = 0;
             int lastProgress = 0;
-            long deadline = SystemClock.elapsedRealtime() + 300_000;
+            long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(5);
             for (int count; (count = input.read(buffer)) != -1;) {
                 checkDeadline(deadline);
                 downloaded += count;
@@ -174,7 +286,7 @@ record UpdateRelease(String version, URL url, URL assetApi, long size, String di
         return bytes;
     }
 
-    private static HttpsURLConnection connect(URL url) throws IOException {
+    private static HttpsURLConnection connect(URL url, int connectMs, int readMs) throws IOException {
         if (!"https".equals(url.getProtocol()) || url.getUserInfo() != null
             || (url.getPort() != -1 && url.getPort() != 443)) {
             throw new IOException("Invalid update URL");
@@ -182,14 +294,14 @@ record UpdateRelease(String version, URL url, URL assetApi, long size, String di
         HttpsURLConnection connection = (HttpsURLConnection) url.openConnection();
         connection.setInstanceFollowRedirects(false);
         connection.setUseCaches(false);
-        connection.setConnectTimeout(10_000);
-        connection.setReadTimeout(15_000);
+        connection.setConnectTimeout(connectMs);
+        connection.setReadTimeout(readMs);
         connection.setRequestProperty("User-Agent", "DeepSeek-API-Android");
         return connection;
     }
 
     private static void checkDeadline(long deadline) throws IOException {
-        if (Thread.currentThread().isInterrupted() || SystemClock.elapsedRealtime() >= deadline) {
+        if (Thread.currentThread().isInterrupted() || deadline - System.nanoTime() <= 0) {
             throw new IOException("Update request interrupted");
         }
     }
