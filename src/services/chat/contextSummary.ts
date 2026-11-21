@@ -163,13 +163,22 @@ export const summarizeCurrentInput = async ({
   summarize: (request: SummaryInput) => Promise<string | null>
   loadFile: (id: string) => Promise<Blob | undefined>
   signal: AbortSignal
-  inlineFiles?: (InlineFileBlockParam | TextBlockParam)[]
+  inlineFiles?: UserBlockParam[]
 }): Promise<{ question: UserMessage; prefix?: AssistantMessage } | null> => {
   const shortenQuestion = estimateTextTokens(question.content) > INPUT_EXCERPT_TOKENS
   const shortenPrefix = estimatePrefixTokens(prefix) > PREFIX_TAIL_TOKENS
-  const files = inlineFiles
-    ? []
-    : question.files.flatMap((file) => (file.serverId ? [{ file, serverId: file.serverId }] : []))
+  const referencedIds =
+    inlineFiles &&
+    new Set(
+      inlineFiles.flatMap((block) =>
+        block.type !== 'text' && block.source.type === 'file' ? [block.source.file_id] : []
+      )
+    )
+  const files = question.files.flatMap((file) =>
+    file.serverId && (!referencedIds || referencedIds.has(file.serverId))
+      ? [{ file, serverId: file.serverId }]
+      : []
+  )
   if (!shortenQuestion && !shortenPrefix && !files.length && !inlineFiles?.length) {
     return null
   }
@@ -216,7 +225,7 @@ export const summarizeCurrentInput = async ({
       if (!(await summarizeText(file.text, '附件'))) {
         return null
       }
-    } else {
+    } else if (file.source.type === 'base64') {
       const summary = await summarize({
         previous,
         excerpts: ['附件'],

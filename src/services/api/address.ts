@@ -33,3 +33,7 @@ export const parseApiAddress = (input: string, format = DEFAULT_CHAT_FORMAT): st
 export const isOfficialApiAddress = (base: string | null, format: ChatApiFormat) =>
   base ===
   (format === 'messages' ? 'https://api.deepseek.com/anthropic/v1' : 'https://api.deepseek.com/v1')
+
+/** 只有自定义的 Anthropic 兼容服务可能需要绕过 Files API。 */
+export const isCustomAnthropicAddress = (base: string | null, format: ChatApiFormat) =>
+  base !== null && format === 'messages' && !isOfficialApiAddress(base, format)

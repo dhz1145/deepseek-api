@@ -1089,3 +1089,158 @@ test('PPTX 按演示顺序提取幻灯片与备注，XLSX 保留工作表、单�
     '[工作表 Sales 第 10 行] A10 "Net sales"\tB10 "=SUM(B1:B9) [缓存值 42]"\tC10 "A & B"'
   )
 })
+
+const fallbackPng = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=',
+  'base64'
+)
+const fallbackImage = (name) => new File([fallbackPng], name, { type: 'image/png' })
+const mockFallbackImage = (t) => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'Image')
+  Object.defineProperty(globalThis, 'Image', {
+    configurable: true,
+    value: class {
+      async decode() {
+        // 原生 Node 没有 canvas；模拟 WebView 无法预处理时仍能发送原始 PNG。
+        throw new Error('Test image decoder unavailable')
+      }
+    },
+  })
+  t.after(() => {
+    if (original) {
+      Object.defineProperty(globalThis, 'Image', original)
+    } else {
+      delete globalThis.Image
+    }
+  })
+}
+
+const waitForDraftUploads = async (sessionId) => {
+  const { getDraft, prepareDraftMessage } = await import('../src/services/chat/drafts.ts')
+  const { useUploads } = await import('../src/services/attachments.ts')
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const draft = getDraft(sessionId)
+    if (draft.attachments.every(({ id }) => useUploads.getState().tasks[id]?.status !== 'uploading')) {
+      return prepareDraftMessage(draft, useUploads.getState().tasks)
+    }
+    await delay(5)
+  }
+  assert.fail('Draft uploads did not finish')
+}
+
+test('自定义 Anthropic：Files 404 后用 Base64 发图，后续消息保留图片上下文', async (t) => {
+  mockFallbackImage(t)
+  const id = seed([])
+  const base = 'https://provider.invalid/v1'
+  const key = 'fallback-test-key'
+  setApiKey(key, base, ['provider-model'], 'messages')
+  let uploads = 0
+  const bodies = []
+  const expected = {
+    type: 'image',
+    source: { type: 'base64', media_type: 'image/png', data: fallbackPng.toString('base64') },
+  }
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    assert.equal(init.headers['x-api-key'], key)
+    if (url === base + '/files') {
+      uploads++
+      assert.equal(init.body.get('file').name, 'inline.png')
+      assert.equal(init.headers['anthropic-beta'], 'files-api-2025-04-14')
+      return new Response('404 page not found', { status: 404 })
+    }
+    assert.equal(url, base + '/messages')
+    assert.equal(init.headers['anthropic-beta'], undefined)
+    bodies.push(JSON.parse(init.body))
+    return stream('已识别图片')
+  })
+  assert.equal(addDraftFiles(id, [fallbackImage('inline.png')], key), null)
+  assert.equal((await waitForDraftUploads(id))?.files[0]?.serverId, null)
+  // 无文字时也能发送，不需要重新选图或修改协议。
+  assert.equal(sendMessage(id), true)
+  const first = await finish(id)
+  assert.equal(first.messages.at(-1).status, 'done')
+  assert.equal(first.messages.at(-2).files[0].serverId, null)
+  assert.deepEqual(bodies[0].messages.find(({ role }) => role === 'user').content, [expected])
+  setDraftText(id, '继续描述刚才的图片')
+  assert.equal(sendMessage(id), true)
+  assert.equal((await finish(id)).messages.at(-1).status, 'done')
+  assert.equal(uploads, 1)
+  assert.equal(bodies.length, 2)
+  assert.deepEqual(bodies[1].messages.find(({ role }) => role === 'user').content, [expected])
+})
+
+test('自定义 Anthropic：支持上传的图片和文档仍引用 file_id，可与内联图片混用', async (t) => {
+  mockFallbackImage(t)
+  const id = seed([])
+  const base = 'https://mixed-provider.invalid/v1'
+  const key = 'mixed-test-key'
+  setApiKey(key, base, ['provider-model'], 'messages')
+  const seen = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (url === base + '/files') {
+      const { name } = init.body.get('file')
+      seen.push(name)
+      return name === 'inline.png'
+        ? new Response(null, { status: 405 })
+        : Response.json({ id: name === 'uploaded.png' ? 'file-api-img' : 'file-api-doc' })
+    }
+    assert.equal(url, base + '/messages')
+    assert.equal(init.headers['anthropic-beta'], 'files-api-2025-04-14')
+    const body = JSON.parse(init.body)
+    const content = body.messages.find(({ role }) => role === 'user').content
+    assert.deepEqual(content, [
+      { type: 'image', source: { type: 'file', file_id: 'file-api-img' } },
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: fallbackPng.toString('base64') },
+      },
+      { type: 'document', source: { type: 'file', file_id: 'file-api-doc' } },
+    ])
+    return stream('三个附件已收到')
+  })
+  assert.equal(addDraftFiles(id, [
+    fallbackImage('uploaded.png'),
+    fallbackImage('inline.png'),
+    new File(['测试文档'], 'notes.txt', { type: 'text/plain' }),
+  ], key), null)
+  assert.deepEqual((await waitForDraftUploads(id))?.files.map(({ serverId }) => serverId), [
+    'file-api-img', null, 'file-api-doc',
+  ])
+  assert.equal(sendMessage(id), true)
+  assert.equal((await finish(id)).messages.at(-1).status, 'done')
+  assert.deepEqual(seen.sort(), ['inline.png', 'notes.txt', 'uploaded.png'])
+})
+
+test('Base64 保底只适用于自定义 Anthropic 图片的接口缺失，不绕过鉴权或影响官方地址', async (t) => {
+  mockFallbackImage(t)
+  const { uploadAttachment, useUploads } = await import('../src/services/attachments.ts')
+  const file = fallbackImage('limits.png')
+  const doc = new File(['测试文档'], 'notes.txt', { type: 'text/plain' })
+  const key = 'scoped-test-key'
+  const base = 'https://scoped-provider.invalid/v1'
+  let status = 501
+  t.mock.method(globalThis, 'fetch', async () => new Response(null, { status }))
+  setApiKey(key, base, ['provider-model'], 'messages')
+  const cached = 'scoped-fallback-id'
+  assert.deepEqual(await uploadAttachment(key, cached, file, file.name, true), { serverId: null })
+  assert.equal(useUploads.getState().tasks[cached].status, 'done')
+  setApiKey(key, 'https://other-provider.invalid/v1', ['provider-model'], 'messages')
+  assert.equal(useUploads.getState().tasks[cached], undefined)
+
+  for (const [address, format, currentFile, code] of [
+    [base, 'messages', file, 401],
+    [base, 'messages', file, 403],
+    [base, 'messages', file, 429],
+    [base, 'messages', doc, 404],
+    [base, 'chat', file, 404],
+    [null, 'messages', file, 404],
+    ['https://api.deepseek.com/anthropic/v1', 'messages', file, 404],
+  ]) {
+    setApiKey(key, address, ['provider-model'], format)
+    status = code
+    await assert.rejects(
+      uploadAttachment(key, `reject-${address}-${format}-${currentFile.name}-${code}`, currentFile, currentFile.name, currentFile === file),
+      (error) => error instanceof ApiError && error.status === code
+    )
+  }
+})

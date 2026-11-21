@@ -2,6 +2,7 @@ import { throwIfAborted } from '../utils/abort.js'
 import { create } from 'zustand'
 import { android } from '../app/android.js'
 import type { LinkedMessage, TranslationMessage } from '../i18n/index.js'
+import { isCustomAnthropicAddress } from './api/address.js'
 import { ApiError, uploadFile } from './api/client.js'
 import { classifyApiError, getUploadErrorInfo, isRetryableApiError } from './api/errors.js'
 import type { FilePurpose } from './api/types.js'
@@ -109,7 +110,15 @@ type Job = () => Promise<void>
 const queue: Job[] = []
 let running = 0
 
-export type AttachmentUpload = { serverId: string; serverImage?: UploadedImage }
+export type AttachmentUpload =
+  | { serverId: string; serverImage?: UploadedImage }
+  /** 图片保留在本地，随 Messages 请求内联；不伪造 file_id。 */
+  | { serverId: null; serverImage?: undefined }
+
+const missingFilesEndpoint = (error: unknown) =>
+  error instanceof ApiError &&
+  error.kind === 'http' &&
+  (error.status === 404 || error.status === 405 || error.status === 501)
 
 type ImageUploadOptions = { maxEdge?: number; forceConversion?: boolean }
 
@@ -188,8 +197,8 @@ const enqueueUpload = (
   })
 
 /**
- * 上传任务按附件的本地 id 登记：输入框选中即开始上传，全部成功后携带 serverId 发送，
- * 不会重复上传；导入的历史附件没有任务，发送前按本地原件补传。
+ * 上传任务按附件的本地 id 登记：选中后开始上传，成功则携带 serverId 发送；
+ * 自定义 Anthropic 无 Files API 时图片可保留为本地附件。导入的历史附件发送前按原件补传。
  * 任务只在内存里，历史附件补传未完成时，刷新后会在下次请求前重新上传。
  */
 export type UploadTask =
@@ -215,9 +224,20 @@ const pending = new Map<
 
 // 切换服务时停止旧配置的上传，队列中的文件不能被发送到新地址。
 useSettings.subscribe((current, previous) => {
-  if (current.apiKey !== previous.apiKey || current.apiBaseUrl !== previous.apiBaseUrl) {
+  if (
+    current.apiKey !== previous.apiKey ||
+    current.apiBaseUrl !== previous.apiBaseUrl ||
+    current.chatConfig.format !== previous.chatConfig.format
+  ) {
     for (const { controller } of pending.values()) {
       controller.abort()
+    }
+    const { tasks } = useUploads.getState()
+    const retained = Object.entries(tasks).filter(
+      ([, task]) => task.status !== 'done' || task.serverId !== null
+    )
+    if (retained.length !== Object.keys(tasks).length) {
+      useUploads.setState({ tasks: Object.fromEntries(retained) })
     }
   }
 })
@@ -237,8 +257,17 @@ export const uploadAttachment = (
   }
   const controller = new AbortController()
   setTask(id, { status: 'uploading' })
+  const { apiBaseUrl, chatConfig } = useSettings.getState()
+  const allowInlineImage = isImage && isCustomAnthropicAddress(apiBaseUrl, chatConfig.format)
   const promise = enqueueUpload(apiKey, blob, name, isImage, controller.signal, options)
+    .catch((error: unknown): AttachmentUpload => {
+      if (allowInlineImage && !controller.signal.aborted && missingFilesEndpoint(error)) {
+        return { serverId: null }
+      }
+      throw error
+    })
     .then((result) => {
+      throwIfAborted(controller.signal)
       setTask(id, { status: 'done', ...result })
       return result
     })

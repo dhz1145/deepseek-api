@@ -60,6 +60,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
     Boolean(state.apiBaseUrl && state.chatConfig.format !== 'messages')
   )
   const apiKey = useSettings((state) => state.apiKey)
+  const apiBaseUrl = useSettings((state) => state.apiBaseUrl)
   const uploadKey = customEndpoint ? null : apiKey
   const setText = (value: string) => setDraftText(sessionId, value)
   const draftReady = useUploads(
@@ -99,7 +100,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
         retryDraftAttachment(sessionId, id, uploadKey)
       }
     }
-  }, [attachments, sessionId, uploadKey])
+  }, [apiBaseUrl, attachments, sessionId, uploadKey])
 
   useEffect(() => {
     if (!apiKey) {

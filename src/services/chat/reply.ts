@@ -18,9 +18,9 @@ import type {
 
 /**
  * 文件按 Files API 的 file_id（附件的 serverId）引用：图片用 image 块，其余用 document 块。
- * 发送前 streamReply 会先补齐 serverId；仍为 null 的是本地没有原件的附件，不进入请求。
+ * 这里只转换已有 serverId 的附件；Base64 保底的图片通过独立的内容块传入。
  */
-const toFileBlocks = (files: FileAttachment[]): FileBlockParam[] =>
+export const toFileBlocks = (files: FileAttachment[]): FileBlockParam[] =>
   files.flatMap(({ serverId, isImage }) =>
     serverId
       ? [

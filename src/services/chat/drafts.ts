@@ -134,7 +134,7 @@ export const replaceDraftImage = (
   return null
 }
 
-/** 发送按钮和实际提交共用规则：有内容，且全部附件已上传成功。 */
+/** 发送按钮和实际提交共用规则：有内容，且附件已上传或可以随请求内联。 */
 export const prepareDraftMessage = (
   draft: Draft,
   tasks: Record<string, UploadTask>,
@@ -148,7 +148,7 @@ export const prepareDraftMessage = (
   for (const attachment of draft.attachments) {
     const task = localOnly ? undefined : tasks[attachment.id]
     const uploaded = task?.status === 'done' ? task : undefined
-    if (!localOnly && !uploaded?.serverId) {
+    if (!localOnly && !uploaded) {
       return null
     }
     files.push({

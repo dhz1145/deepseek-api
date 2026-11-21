@@ -1,6 +1,7 @@
 import { throwIfAborted } from '../../utils/abort.js'
 import { create } from 'zustand'
 import { createId } from '../../utils/id.js'
+import { isCustomAnthropicAddress } from '../api/address.js'
 import { ApiError, streamChatMessage } from '../api/client.js'
 import type { CreateMessageRequest, MessageParam } from '../api/types.js'
 import {
@@ -957,7 +958,9 @@ const ensureServerId = async (
   }
   const task = useUploads.getState().tasks[file.id]
   if (task?.status === 'done') {
-    return { serverId: task.serverId, serverImage: task.serverImage }
+    return task.serverId === null
+      ? { serverId: null }
+      : { serverId: task.serverId, serverImage: task.serverImage }
   }
   const blob = await db.loadFile(file.id)
   if (!blob) {
@@ -1095,7 +1098,10 @@ const uploadRequestImage = async (
   const options = { maxEdge, forceConversion: true }
   const result = await uploadAttachment(apiKey, file.id, blob, file.name, true, options)
   // 同一附件可能有另一轮上传正在进行，复用它之前先核对图片尺寸和格式。
-  if (result.serverImage?.converted && result.serverImage.maxEdge <= maxEdge) {
+  if (
+    result.serverId === null ||
+    (result.serverImage?.converted && result.serverImage.maxEdge <= maxEdge)
+  ) {
     return result
   }
   throwIfAborted(signal)
@@ -1224,10 +1230,11 @@ const waitForRetry = (attempt: number, signal: AbortSignal) =>
  * 服务端拒绝附件时尝试重新补传后重发。失效的 file_id 退避重试，图片按报错中指明的位置修复。
  */
 const streamReply = async (sessionId: string, initial: AssistantMessage, request: Request) => {
-  const { apiKey: storedKey, chatConfig, chatModel } = useSettings.getState()
+  const { apiKey: storedKey, apiBaseUrl, chatConfig, chatModel } = useSettings.getState()
   const apiKey = storedKey ?? ''
   const custom = Boolean(chatConfig.endpoint)
   const inlineAttachments = custom && chatConfig.format !== 'messages'
+  const allowInlineImages = isCustomAnthropicAddress(apiBaseUrl, chatConfig.format)
   const model = (inlineAttachments ? chatModel : (initial.model ?? chatModel)) || null
   const controller = new AbortController()
   const unsubscribeCredentials = useSettings.subscribe((current, previous) => {
@@ -1317,15 +1324,34 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           prepared = await prepareFiles(sessionId, attempt, signal)
           preparing = false
         }
-        const inlineFiles = inlineAttachments
-          ? await prepareCustomAttachments(
-              chatConfig.format,
-              prepared.history,
-              reducedInput?.question ?? prepared.question,
-              (id) => loadOriginalFile(sessionId, id),
-              signal
-            )
-          : undefined
+        const question = reducedInput?.question ?? prepared.question
+        let fallbackImages: Set<string> | undefined
+        if (allowInlineImages) {
+          const { tasks } = useUploads.getState()
+          fallbackImages = new Set<string>()
+          const users = [question, ...getContextRounds(prepared.history).map(([user]) => user)]
+          for (const { files } of users) {
+            for (const file of files) {
+              const task = tasks[file.id]
+              if (
+                file.isImage && !file.serverId && task?.status === 'done' && task.serverId === null
+              ) {
+                fallbackImages.add(file.id)
+              }
+            }
+          }
+        }
+        const inlineFiles =
+          inlineAttachments || fallbackImages?.size
+            ? await prepareCustomAttachments(
+                chatConfig.format,
+                prepared.history,
+                question,
+                (id) => loadOriginalFile(sessionId, id),
+                signal,
+                fallbackImages
+              )
+            : undefined
         if (reduceInput && !reducedInput) {
           reducedInput = await summarizeCurrentInput({
             apiKey,

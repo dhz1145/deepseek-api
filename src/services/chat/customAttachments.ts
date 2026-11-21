@@ -2,11 +2,11 @@ import { throwIfAborted } from '../../utils/abort.js'
 import { readBlobBuffer } from '../../utils/blob.js'
 import type { ChatApiFormat } from '../api/chatConfig.js'
 import { ApiError } from '../api/client.js'
-import type { InlineFileBlockParam, TextBlockParam } from '../api/types.js'
+import type { InlineFileBlockParam, TextBlockParam, UserBlockParam } from '../api/types.js'
 import { getFileExt } from '../attachments.js'
 import { prepareImageUpload } from '../imageUpload.js'
 import { readPlainText } from './contextSummary.js'
-import { getContextRounds } from './reply.js'
+import { getContextRounds, toFileBlocks } from './reply.js'
 import type { FileAttachment, Message, UserMessage } from './types.js'
 
 type CustomAttachment = InlineFileBlockParam | TextBlockParam
@@ -27,12 +27,17 @@ const toInlineBlock = async (
   format: ChatApiFormat,
   file: FileAttachment,
   blob: Blob,
-  signal: AbortSignal
+  signal: AbortSignal,
+  limitInlineImage = false
 ): Promise<CustomAttachment | undefined> => {
   if (file.isImage) {
     const original = new File([blob], file.name, { type: file.mimeType || blob.type })
     const { file: image } = await prepareImageUpload(original, signal, 4096, true)
     if (image && /^image\/(jpeg|png|gif|webp)$/.test(image.type)) {
+      // Files API 原件可比单张内联图片更大；不要在 Android 上编码超限图片。
+      if (limitInlineImage && image.size > 32 * 1024 * 1024) {
+        throw new ApiError('protocol', { key: 'uploadMaxMBSize', params: { size: 32 } })
+      }
       return {
         type: 'image',
         source: { type: 'base64', media_type: image.type, data: await toBase64(image, signal) },
@@ -62,15 +67,24 @@ export const prepareCustomAttachments = async (
   history: Message[],
   question: UserMessage,
   loadFile: (id: string) => Promise<Blob | undefined>,
-  signal: AbortSignal
+  signal: AbortSignal,
+  /** 自定义 Anthropic 只内联上传接口不支持的图片，保留其余附件的 file_id。 */
+  fallbackImageIds?: ReadonlySet<string>
 ) => {
-  const inline = new Map<string, CustomAttachment[]>()
+  const inline = new Map<string, UserBlockParam[]>()
   for (const user of [...getContextRounds(history).map(([user]) => user), question]) {
-    const blocks: CustomAttachment[] = []
+    const blocks: UserBlockParam[] = []
     for (const file of user.files) {
       throwIfAborted(signal)
+      if (fallbackImageIds && (!file.isImage || !fallbackImageIds.has(file.id))) {
+        blocks.push(...toFileBlocks([file]))
+        continue
+      }
       const blob = await loadFile(file.id)
-      const part = blob ? await toInlineBlock(format, file, blob, signal) : undefined
+      throwIfAborted(signal)
+      const part = blob
+        ? await toInlineBlock(format, file, blob, signal, fallbackImageIds !== undefined)
+        : undefined
       if (part) {
         blocks.push(part)
       } else if (user === question) {
