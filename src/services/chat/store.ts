@@ -18,7 +18,13 @@ import {
   useUploads,
   type AttachmentUpload,
 } from '../attachments.js'
-import { MANY_IMAGES_COUNT, MANY_IMAGES_MAX_EDGE, MAX_IMAGE_EDGE } from '../imageUpload.js'
+import {
+  MANY_IMAGES_COUNT,
+  MANY_IMAGES_MAX_EDGE,
+  MAX_IMAGE_EDGE,
+  OFFICIAL_FILE_IMAGE_MAX_EDGE,
+  readImageLongEdge,
+} from '../imageUpload.js'
 import { setPinnedSessions, useSettings } from '../settings.js'
 import { appendBranch, getVisibleMessages, normalizeSession, selectVersion } from './branches.js'
 import type { ImportArchiveResult } from './history/importArchive.js'
@@ -38,11 +44,14 @@ import {
 import { prepareCustomAttachments } from './customAttachments.js'
 import * as db from './db.js'
 import {
+  cancelMessageEdit,
   clearAllDrafts,
   clearDraft,
   clearSentDraft,
+  clearSentEdit,
   getDraft,
   prepareDraftMessage,
+  type DraftFilePayload,
 } from './drafts.js'
 import { createLatestReminder } from './latestReminder.js'
 import {
@@ -599,6 +608,7 @@ export const mergeHistory = async (
 
 export const newChat = () => {
   if (!get().importingHistory) {
+    cancelMessageEdit()
     set({ activeId: null })
     trimSessionCache()
   }
@@ -606,6 +616,7 @@ export const newChat = () => {
 
 export const selectSession = (id: string) => {
   if (!get().importingHistory && get().sessions.some((session) => session.id === id)) {
+    cancelMessageEdit()
     touchSession(id)
     set({ activeId: id })
     void ensureSessionLoaded(id)
@@ -698,6 +709,24 @@ const removeSessionData = async (id: string): Promise<boolean> => {
 
 export const stopReply = (sessionId: string) => getStreamController(sessionId)?.abort()
 
+const stripFileBlobs = (files: readonly DraftFilePayload[]): FileAttachment[] =>
+  files.map(({ id, serverId, serverImage, name, size, isImage, mimeType }) => ({
+    id,
+    serverId,
+    serverImage,
+    name,
+    size,
+    isImage,
+    mimeType,
+  }))
+
+const appendPendingFiles = (sessionId: string, files: readonly DraftFilePayload[]) => {
+  const added = files.flatMap((file) => (file.blob ? [{ id: file.id, blob: file.blob }] : []))
+  if (added.length > 0) {
+    pendingFiles.set(sessionId, [...(pendingFiles.get(sessionId) ?? []), ...added])
+  }
+}
+
 /**
  * 提交指定会话的最新草稿；null 表示新建会话。
  * 同步接收成功才清空草稿，附件原件由会话接管；保存失败仍通过保存入口重试。
@@ -751,18 +780,11 @@ export const sendMessage = (targetSessionId: string | null) => {
     id: createId(),
     role: 'user',
     content: text,
-    files: files.map(({ id, serverId, serverImage, name, size, isImage, mimeType }) => ({
-      id,
-      serverId,
-      serverImage,
-      name,
-      size,
-      isImage,
-      mimeType,
-    })),
+    files: stripFileBlobs(files),
     createdAt: now,
   }
   const reply = createReply()
+  cancelMessageEdit()
   updateSession(sessionId, (session) => ({
     ...appendBranch(session, history.at(-1)?.id ?? null, [question, reply]),
     title:
@@ -770,12 +792,7 @@ export const sendMessage = (targetSessionId: string | null) => {
       (history.length === 0 && files.length === 0 && SIMPLE_ARITHMETIC.test(text) ? text.trim() : ''),
     updatedAt: now,
   }))
-  if (files.length > 0) {
-    pendingFiles.set(sessionId, [
-      ...(pendingFiles.get(sessionId) ?? []),
-      ...files.map(({ id, blob }) => ({ id, blob })),
-    ])
-  }
+  appendPendingFiles(sessionId, files)
   persist(sessionId)
   clearSentDraft(targetSessionId, customEndpoint)
   void streamReply(sessionId, reply, { history, question })
@@ -798,6 +815,7 @@ export const regenerateReply = (sessionId: string, messageId?: string) => {
   if (question?.role !== 'user' || path[index]?.role !== 'assistant') {
     return
   }
+  cancelMessageEdit()
   const history = path.slice(0, index - 1)
   const reply = createReply()
   updateSession(sessionId, (s) => ({
@@ -808,8 +826,13 @@ export const regenerateReply = (sessionId: string, messageId?: string) => {
   void streamReply(sessionId, reply, { history, question })
 }
 
-/** 编辑提问后新增同父版本，保留原文件；旧问题的所有回答与后续对话仍可切回。 */
-export const editMessage = (sessionId: string, messageId: string, content: string): boolean => {
+/** 编辑提问后新增同父版本；未显式传入文件列表时保留原消息附件。 */
+export const editMessage = (
+  sessionId: string,
+  messageId: string,
+  content: string,
+  nextFiles?: DraftFilePayload[]
+): boolean => {
   if (get().importingHistory || deletingSessions.has(sessionId)) {
     return false
   }
@@ -820,15 +843,19 @@ export const editMessage = (sessionId: string, messageId: string, content: strin
   const path = getVisibleMessages(session)
   const index = path.findIndex((message) => message.id === messageId)
   const previous = path[index]
+  if (previous?.role !== 'user') {
+    return false
+  }
   const text = content.trim()
-  if (previous?.role !== 'user' || (!text && previous.files.length === 0)) {
+  const files = nextFiles ?? previous.files
+  if (!text && files.length === 0) {
     return false
   }
   const question: UserMessage = {
     id: createId(),
     role: 'user',
     content: text,
-    files: previous.files,
+    files: stripFileBlobs(files),
     createdAt: Date.now(),
   }
   const reply = createReply()
@@ -836,7 +863,10 @@ export const editMessage = (sessionId: string, messageId: string, content: strin
     ...appendBranch(s, path[index - 1]?.id ?? null, [question, reply]),
     updatedAt: Date.now(),
   }))
+  appendPendingFiles(sessionId, files)
   persist(sessionId)
+  const { endpoint, format } = useSettings.getState().chatConfig
+  clearSentEdit(sessionId, messageId, Boolean(endpoint && format !== 'messages'))
   void streamReply(sessionId, reply, { history: path.slice(0, index), question })
   return true
 }
@@ -848,6 +878,7 @@ export const selectMessageVersion = (sessionId: string, messageId: string) => {
   if (getStreamController(sessionId)) {
     return
   }
+  cancelMessageEdit()
   updateSession(sessionId, (session) => selectVersion(session, messageId))
   persist(sessionId)
 }
@@ -923,8 +954,13 @@ export const retryUpload = (sessionId: string, messageId: string) => {
 
 type Request = { history: Message[]; question: UserMessage; prefix?: AssistantMessage }
 
-/** 把补传得到的 serverId 写回会话里所有引用同一附件的消息（编辑、重新生成会共用附件） */
-const saveUploadedFiles = (sessionId: string, uploads: Map<string, AttachmentUpload>) => {
+type AttachmentServerFile = Pick<FileAttachment, 'serverId' | 'serverImage'>
+
+/** 将服务端附件状态写回会话里所有引用同一附件的消息（编辑、重新生成会共用附件）。 */
+const saveUploadedFiles = (
+  sessionId: string,
+  uploads: ReadonlyMap<string, AttachmentServerFile>
+) => {
   if (uploads.size === 0) {
     return
   }
@@ -950,6 +986,7 @@ const saveUploadedFiles = (sessionId: string, uploads: Map<string, AttachmentUpl
  * 本地也没有原件（导入的文档附件只有元数据）时返回 null，该附件只展示、不进入请求。
  */
 const ensureServerId = async (
+  sessionId: string,
   apiKey: string,
   file: FileAttachment
 ): Promise<AttachmentUpload | null> => {
@@ -962,7 +999,7 @@ const ensureServerId = async (
       ? { serverId: null }
       : { serverId: task.serverId, serverImage: task.serverImage }
   }
-  const blob = await db.loadFile(file.id)
+  const blob = await loadOriginalFile(sessionId, file.id)
   if (!blob) {
     return null
   }
@@ -985,6 +1022,30 @@ const refreshRequest = (sessionId: string, request: Request): Request => {
   }
 }
 
+/** 校验实际进入本轮上下文的旧图片 ID；超限时让已有的附件流程从本地原件补传。 */
+const checkOfficialImageIds = async (sessionId: string, request: Request, signal: AbortSignal) => {
+  const checked = new Map<string, AttachmentServerFile>()
+  const unique = new Map(getRequestImages(request).map((file) => [file.id, file]))
+  for (const file of unique.values()) {
+    if (file.serverImage && file.serverImage.maxEdge <= OFFICIAL_FILE_IMAGE_MAX_EDGE) {
+      continue
+    }
+    throwIfAborted(signal)
+    const blob = await loadOriginalFile(sessionId, file.id).catch(() => undefined)
+    throwIfAborted(signal)
+    if (!blob) {
+      continue
+    }
+    const maxEdge = file.serverImage?.maxEdge ?? (await readImageLongEdge(blob, signal))
+    if (maxEdge && maxEdge > OFFICIAL_FILE_IMAGE_MAX_EDGE) {
+      checked.set(file.id, { serverId: null, serverImage: undefined })
+    } else if (maxEdge && !file.serverImage) {
+      checked.set(file.id, { serverId: file.serverId, serverImage: { maxEdge, converted: false } })
+    }
+  }
+  return { checked, unique }
+}
+
 /**
  * 发送前补齐附件的 serverId。
  * - 本轮提问的附件并行补齐，任一失败则整体失败，已成功的照常写回，重试时复用成功结果；
@@ -996,15 +1057,37 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
   // 服务端判定 file_id 失效时会清掉会话里的 serverId，先用最新消息替换请求快照，
   // 否则快照里仍是旧 id，补传会直接复用它。
   request = refreshRequest(sessionId, request)
-  const apiKey = useSettings.getState().apiKey ?? ''
+  const { apiKey: key, chatConfig } = useSettings.getState()
+  const apiKey = key ?? ''
   const resultsById = new Map<string, AttachmentUpload>()
   // 停止生成立即生效；上传本身不取消（输入框与其他消息可能共用同一任务），完成后照常写回 serverId
   const aborted = new Promise<never>((_, reject) => {
     signal.addEventListener('abort', () => reject(signal.reason), { once: true })
   })
+  if (!chatConfig.endpoint) {
+    const { checked, unique } = await Promise.race([
+      checkOfficialImageIds(sessionId, request, signal),
+      aborted,
+    ])
+    throwIfAborted(signal)
+    if (checked.size && epoch === historyEpoch) {
+      for (const [id, result] of checked) {
+        const task = useUploads.getState().tasks[id]
+        if (
+          result.serverId === null &&
+          task?.status === 'done' &&
+          task.serverId === unique.get(id)?.serverId
+        ) {
+          cancelUpload(id)
+        }
+      }
+      saveUploadedFiles(sessionId, checked)
+      request = refreshRequest(sessionId, request)
+    }
+  }
   const uploads = Promise.allSettled(
     request.question.files.map(async (file) => {
-      const result = await ensureServerId(apiKey, file)
+      const result = await ensureServerId(sessionId, apiKey, file)
       if (result) {
         resultsById.set(file.id, result)
       }
@@ -1032,7 +1115,7 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
   for (const file of pending.values()) {
     throwIfAborted(signal)
     try {
-      const result = await Promise.race([ensureServerId(apiKey, file), aborted])
+      const result = await Promise.race([ensureServerId(sessionId, apiKey, file), aborted])
       if (result) {
         saveUploadedFiles(sessionId, new Map([[file.id, result]]))
       }
@@ -1131,7 +1214,12 @@ const repairRejectedImage = async (
   const { file_id: fileId } = block.source
   const images = getRequestImages(refreshRequest(sessionId, request))
   const file = images.find(({ serverId }) => serverId === fileId)
-  const maxEdge = images.length >= MANY_IMAGES_COUNT ? MANY_IMAGES_MAX_EDGE : MAX_IMAGE_EDGE
+  const custom = Boolean(useSettings.getState().chatConfig.endpoint)
+  const maxEdge = !custom
+    ? OFFICIAL_FILE_IMAGE_MAX_EDGE
+    : images.length >= MANY_IMAGES_COUNT
+      ? MANY_IMAGES_MAX_EDGE
+      : MAX_IMAGE_EDGE
   if (!file || (file.serverImage?.converted && file.serverImage.maxEdge <= maxEdge)) {
     return false
   }

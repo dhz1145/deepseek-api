@@ -7,6 +7,12 @@
 
 .highlight {
   position: absolute;
+  background: rgba(66, 110, 254, 0.2);
+  background: color-mix(in srgb, var(--dsw-alias-brand-text) 20%, transparent);
+}
+
+body[data-ds-dark-theme] .highlight {
+  background: rgba(103, 158, 254, 0.2);
   background: color-mix(in srgb, var(--dsw-alias-brand-text) 20%, transparent);
 }
 

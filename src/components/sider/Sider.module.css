@@ -136,7 +136,8 @@
   align-items: center;
   box-sizing: border-box;
   width: 100%;
-  margin-block: auto;
+  margin-top: auto;
+  margin-bottom: auto;
   padding: 6px 2px 6px 6px;
   border: none;
   border-radius: 12px;

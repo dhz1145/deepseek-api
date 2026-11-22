@@ -101,16 +101,20 @@
   color: inherit;
   background: var(--image-toolbar);
   cursor: pointer;
+}
 
-  svg {
-    width: 18px;
-    height: 18px;
-    flex: none;
-  }
+.action svg,
+.tools button svg,
+.close svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
 
-  &:disabled {
-    opacity: 0.55;
-  }
+.action:disabled,
+.tools button:disabled,
+.close:disabled {
+  opacity: 0.55;
 }
 
 .tools {
@@ -120,11 +124,12 @@
   align-items: center;
   gap: 12px;
   min-height: 48px;
+  margin: var(--android-status-inset, 28px) 16px 12px;
   margin: max(28px, var(--android-status-inset, 0px)) 16px 12px;
 }
 
 .rotate {
-  margin-inline-start: auto;
+  margin-left: auto;
 }
 
 .stage {

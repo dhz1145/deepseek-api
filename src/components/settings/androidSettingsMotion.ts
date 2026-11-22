@@ -23,6 +23,38 @@ const secondPhase = (property: Property, from: Value, to: Value, easing: string)
   { [property]: to },
 ]
 
+const waitForAnimation = (animation: Animation): Promise<boolean> => {
+  // Animation.finished landed in Chrome 84; fall back to Web Animations events on older WebView.
+  if (animation.finished) {
+    return animation.finished.then(
+      () => true,
+      () => false
+    )
+  }
+  if (animation.playState === 'finished') {
+    return Promise.resolve(true)
+  }
+  if (animation.playState === 'idle') {
+    return Promise.resolve(false)
+  }
+  return new Promise<boolean>((resolve) => {
+    const cleanup = () => {
+      animation.removeEventListener('finish', onFinish)
+      animation.removeEventListener('cancel', onCancel)
+    }
+    const onFinish = () => {
+      cleanup()
+      resolve(true)
+    }
+    const onCancel = () => {
+      cleanup()
+      resolve(false)
+    }
+    animation.addEventListener('finish', onFinish)
+    animation.addEventListener('cancel', onCancel)
+  })
+}
+
 // A back gesture seeks through the same keyframes as a press of the back button.
 export const createSettingsPageMotion = (
   page: HTMLElement,
@@ -107,10 +139,7 @@ export const createSettingsPageMotion = (
         animation.playbackRate = timeline / duration
         animation.play()
       }
-      return animations[0].finished.then(
-        () => true,
-        () => false
-      )
+      return waitForAnimation(animations[0])
     },
     cancel,
   }

@@ -83,6 +83,13 @@
   background: linear-gradient(
       90deg,
       var(--android-thinking-text) 34%,
+      var(--dsw-alias-label-caption) 50%,
+      var(--android-thinking-text) 66%
+    )
+    100% 0 / 400% 100%;
+  background: linear-gradient(
+      90deg,
+      var(--android-thinking-text) 34%,
       color-mix(in srgb, var(--android-thinking-text) 15%, var(--dsw-alias-bg-base)) 50%,
       var(--android-thinking-text) 66%
     )
@@ -187,17 +194,15 @@
   );
 }
 
-.withLine,
-.content {
-  &::after {
-    content: '';
-    position: absolute;
-    left: 7.5px;
-    top: 31px;
-    width: 1px;
-    height: calc(100% - 24px);
-    background-color: var(--dsw-alias-label-dimmed);
-  }
+.withLine::after,
+.content::after {
+  content: '';
+  position: absolute;
+  left: 7.5px;
+  top: 31px;
+  width: 1px;
+  height: calc(100% - 24px);
+  background-color: var(--dsw-alias-label-dimmed);
 }
 
 [data-android] .content {

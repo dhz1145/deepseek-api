@@ -1,7 +1,11 @@
 import { throwIfAborted } from '../utils/abort.js'
+import { readBlobBuffer } from '../utils/blob.js'
+
 /** 公开 API 的单边上限。对话请求包含至少 15 张图片时使用较小的上限。 */
 export const MAX_IMAGE_EDGE = 8192
 export const MANY_IMAGES_MAX_EDGE = 4096
+/** DeepSeek 官方 chat-demo v0.1.3 的 Files API 上传图片长边上限。 */
+export const OFFICIAL_FILE_IMAGE_MAX_EDGE = 4096
 export const MANY_IMAGES_COUNT = 15
 
 /** 官方 Android App 在 RGBA 位图超过 30 MiB 时将宽高各减半一次。 */
@@ -12,12 +16,27 @@ export type UploadedImage = { maxEdge: number; converted: boolean }
 type PreparedImage = { file: File; image?: UploadedImage }
 
 const isJpegOrPng = async (file: File) => {
-  const bytes = new Uint8Array(await file.slice(0, 8).arrayBuffer())
+  const bytes = new Uint8Array(await readBlobBuffer(file.slice(0, 8)))
   return (
     (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) ||
     (bytes.length === 8 &&
       [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every((byte, i) => bytes[i] === byte))
   )
+}
+
+/** 旧 file_id 没有上传尺寸时，读原件尺寸。浏览器不能解码时保留旧 ID。 */
+export const readImageLongEdge = async (blob: Blob, signal: AbortSignal) => {
+  throwIfAborted(signal)
+  const url = URL.createObjectURL(blob)
+  try {
+    const image = new Image()
+    image.src = url
+    const decoded = await image.decode().then(() => true, () => false)
+    throwIfAborted(signal)
+    return decoded ? Math.max(image.naturalWidth, image.naturalHeight) : undefined
+  } finally {
+    URL.revokeObjectURL(url)
+  }
 }
 
 export const prepareImageUpload = async (

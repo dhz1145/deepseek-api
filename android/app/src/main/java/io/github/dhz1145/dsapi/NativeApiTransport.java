@@ -1,4 +1,4 @@
-package io.github.lijiahua1024.dsreplica;
+package io.github.dhz1145.dsapi;
 
 import android.util.Base64;
 import android.webkit.JavascriptInterface;

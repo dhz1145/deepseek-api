@@ -12,6 +12,7 @@ tmp/
 
 captures/
 /AGENTS.md
+/.idea/
 android/.gradle/
 android/local.properties
 android/**/build/

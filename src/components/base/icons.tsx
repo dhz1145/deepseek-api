@@ -16,6 +16,16 @@ export const IconChevronDownOutline14 = () => (
   </svg>
 )
 
+export const IconChevronDownOutline20 = () => (
+  <svg width={20} height={20} viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path
+      d="M4.375,8.19L8.728,12.539C9.258,13.068 9.523,13.333 9.844,13.384C9.947,13.401 10.053,13.401 10.156,13.384C10.477,13.333 10.742,13.068 11.272,12.539L15.625,8.19"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    />
+  </svg>
+)
+
 export const IconChevronRightOutline14 = () => (
   <svg width={14} height={14} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path

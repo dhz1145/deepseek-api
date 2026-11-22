@@ -1,4 +1,4 @@
-import { useRef, type PointerEvent } from 'react'
+import { useEffect, useRef, type PointerEvent, type RefObject } from 'react'
 import { android } from '../../app/android.js'
 import { closeMobileSider, openMobileSider, useMobileSider } from './mobileSiderState.js'
 
@@ -41,8 +41,27 @@ function releaseVelocity(samples: Sample[], time: number) {
     : 0
 }
 
-export const useAndroidDrawerGesture = () => {
+export const useAndroidDrawerGesture = (
+  frameRef: RefObject<HTMLDivElement | null>,
+  enabled: boolean
+) => {
   const gesture = useRef<Gesture | null>(null)
+
+  useEffect(() => {
+    const frame = frameRef.current
+    if (!enabled || !frame) {
+      return
+    }
+    // 抽屉横向拖动接管手势后阻止默认 touchmove，避免松手后 WebView 产生残留 fling 吞掉首次点击。
+    const onTouchMove = (event: TouchEvent) => {
+      const drag = gesture.current
+      if (drag && drag.start !== null && event.cancelable) {
+        event.preventDefault()
+      }
+    }
+    frame.addEventListener('touchmove', onTouchMove, { passive: false, capture: true })
+    return () => frame.removeEventListener('touchmove', onTouchMove, { capture: true })
+  }, [enabled, frameRef])
 
   const onPointerDownCapture = (event: PointerEvent<HTMLDivElement>) => {
     const target = event.target instanceof Element ? event.target : null

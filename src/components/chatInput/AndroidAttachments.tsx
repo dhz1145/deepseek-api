@@ -4,6 +4,7 @@ import { useTranslate } from '../../i18n/index.js'
 import { ACCEPT } from '../../services/attachments.js'
 import { AndroidAttachment } from '../base/AndroidIcons.js'
 import { showToast } from '../base/toastState.js'
+import { setInert } from '../../utils/inert.js'
 import styles from './AndroidAttachments.module.css'
 
 type Photo = { id: string; name: string; type: string }
@@ -38,9 +39,7 @@ export const AndroidAttachments = ({
     []
   )
   useEffect(() => {
-    if (panel.current) {
-      panel.current.inert = !open
-    }
+    setInert(panel.current, !open)
   }, [open])
 
   useEffect(() => {

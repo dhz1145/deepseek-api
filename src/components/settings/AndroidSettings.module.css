@@ -242,7 +242,8 @@ a.row:active,
   background: var(--settings-card);
 
   .row {
-    padding-inline: 3px;
+    padding-left: 3px;
+    padding-right: 3px;
   }
 
   input {
@@ -266,7 +267,10 @@ a.row:active,
 
 .overlay {
   position: fixed;
-  inset: 0 0 var(--android-button-nav-inset, 0px);
+  top: 0;
+  right: 0;
+  bottom: var(--android-button-nav-inset, 0px);
+  left: 0;
   z-index: 2;
   display: grid;
   place-items: center;
@@ -308,7 +312,8 @@ a.row:active,
 .options {
   min-height: 0;
   overflow-y: auto;
-  border-block: 1px solid var(--settings-line);
+  border-top: 1px solid var(--settings-line);
+  border-bottom: 1px solid var(--settings-line);
 
   button {
     display: flex;

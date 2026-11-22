@@ -26,11 +26,13 @@
   display: grid;
   justify-items: start;
   gap: 16px;
-  padding-block: 16px;
+  padding-top: 16px;
+  padding-bottom: 16px;
 }
 
 [data-android] .editor {
-  padding-inline: 16px;
+  padding-left: 16px;
+  padding-right: 16px;
 }
 
 .avatarField {

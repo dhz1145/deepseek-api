@@ -15,6 +15,26 @@
 
 [data-android] .container {
   padding-bottom: 20px;
+  transition: opacity 150ms ease;
+}
+
+[data-android] .files,
+[data-android] .bottom {
+  transition: opacity 150ms ease;
+}
+
+[data-android] .container[data-editing-target='true'] .files,
+[data-android] .container[data-editing-target='true'] .bottom {
+  opacity: 0.1;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-android] .container,
+  [data-android] .files,
+  [data-android] .bottom {
+    transition: none;
+  }
 }
 
 [data-android] .container.isFirst {

@@ -1,3 +1,4 @@
+import { isWebUrl } from '../../../utils/url.js'
 import type {
   ServerToolUseBlock,
   WebFetchResult,
@@ -21,15 +22,6 @@ export type LocalSession = {
   session: Session
   /** 本会话目录下应存在的图片：ZIP 条目名 → 文件 ID */
   images: Map<string, string>
-}
-
-/** 链接会渲染成 href，只接受 HTTP / HTTPS。 */
-const isWebUrl = (value: string) => {
-  try {
-    return ['http:', 'https:'].includes(new URL(value).protocol)
-  } catch {
-    return false
-  }
 }
 
 const toFile = (file: FileEntry): FileAttachment => ({

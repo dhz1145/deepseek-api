@@ -100,6 +100,7 @@ export const zh = {
   send: '发送',
   editMessage: '编辑消息',
   androidEditMessage: '修改',
+  androidEditingMessage: '修改输入',
   regenerate: '重新生成',
   continueGenerating: '继续生成',
   changeApiKey: '更换 API Key',

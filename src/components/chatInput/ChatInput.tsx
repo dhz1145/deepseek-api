@@ -4,6 +4,7 @@ import { create } from 'zustand'
 import { android } from '../../app/android.js'
 import { useAndroidBackInterception } from '../../app/useAndroidBackInterception.js'
 import {
+  IconCloseOutline16,
   IconGlobeLanguageOutline14,
   IconPaperclipOutline16,
   IconSendOutline16,
@@ -12,16 +13,22 @@ import {
 } from '../base/icons.js'
 import { setSearch, setThinking, useSettings } from '../../services/settings.js'
 import { useIsMobile } from '../../app/viewport.js'
-import { sendMessage, stopReply, useChatStore } from '../../services/chat/store.js'
+import { editMessage, sendMessage, stopReply, useChatStore } from '../../services/chat/store.js'
 import {
   addDraftFiles,
+  addEditFiles,
+  cancelMessageEdit,
   EMPTY_DRAFT,
   getDraft,
   prepareDraftMessage,
   removeDraftAttachment,
+  removeEditAttachment,
   replaceDraftImage,
+  replaceEditImage,
   retryDraftAttachment,
+  retryEditAttachment,
   setDraftText,
+  setEditDraftText,
   useDrafts,
 } from '../../services/chat/drafts.js'
 import { stopReadAloud } from '../../services/speech/readAloud.js'
@@ -39,6 +46,7 @@ import { Spectrum } from './Spectrum.js'
 import { AndroidAttachments } from './AndroidAttachments.js'
 import { AndroidDraftAttachments } from './AndroidDraftAttachments.js'
 import { AndroidImageViewer } from '../files/AndroidImageViewer.js'
+import { useFileView } from '../files/useFileView.js'
 import { AndroidVoiceOverlay } from './AndroidVoiceOverlay.js'
 import { useHoldToTalk } from './useHoldToTalk.js'
 import { useTranslate } from '../../i18n/index.js'
@@ -55,23 +63,43 @@ export const ChatInput = memo(function ChatInput({ sessionId }: { sessionId: str
 const Input = ({ sessionId }: { sessionId: string | null }) => {
   const t = useTranslate()
   const draft = useDrafts((state) => state.drafts.get(sessionId) ?? EMPTY_DRAFT)
-  const { text, attachments } = draft
+  const editing = useDrafts((state) =>
+    android && sessionId !== null && state.editing?.sessionId === sessionId ? state.editing : null
+  )
+  const editingHere = editing !== null
+  const activeDraft = editing ?? draft
+  const { text, attachments } = activeDraft
   const customEndpoint = useSettings((state) =>
     Boolean(state.apiBaseUrl && state.chatConfig.format !== 'messages')
   )
   const apiKey = useSettings((state) => state.apiKey)
   const apiBaseUrl = useSettings((state) => state.apiBaseUrl)
   const uploadKey = customEndpoint ? null : apiKey
-  const setText = (value: string) => setDraftText(sessionId, value)
+  const isEditingTarget = useCallback(
+    () =>
+      Boolean(
+        android && sessionId !== null && useDrafts.getState().editing?.sessionId === sessionId
+      ),
+    [sessionId]
+  )
+  const setText = (value: string) => {
+    if (isEditingTarget()) {
+      setEditDraftText(value)
+    } else {
+      setDraftText(sessionId, value)
+    }
+  }
   const draftReady = useUploads(
-    (state) => prepareDraftMessage(draft, state.tasks, customEndpoint) !== null
+    (state) => prepareDraftMessage(activeDraft, state.tasks, customEndpoint) !== null
   )
   const imagesUploading = useUploads(
     (state) =>
       !customEndpoint &&
       attachments.some(
         (item) =>
-          item.isImage && (!state.tasks[item.id] || state.tasks[item.id].status === 'uploading')
+          item.isImage &&
+          !item.existing &&
+          (!state.tasks[item.id] || state.tasks[item.id].status === 'uploading')
       )
   )
   const streaming = useChatStore(
@@ -84,10 +112,11 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const togglesRef = useRef<HTMLDivElement>(null)
-  const voiceMode = useVoiceMode((state) => state.enabled)
+  const voiceMode = useVoiceMode((state) => state.enabled) && !editingHere
   const [showAttachments, setShowAttachments] = useState(false)
   const [previewId, setPreviewId] = useState<string>()
   const preview = attachments.find((item) => item.id === previewId)
+  const previewView = useFileView(preview?.file ?? (preview?.existing ? preview.id : undefined), preview?.name)
   const [typing, setTyping] = useState(false)
   const sendSpoken = useRef(false)
 
@@ -95,12 +124,16 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
     if (!uploadKey) {
       return
     }
-    for (const { id } of attachments) {
-      if (!useUploads.getState().tasks[id]) {
-        retryDraftAttachment(sessionId, id, uploadKey)
+    for (const item of attachments) {
+      if (!item.existing && !useUploads.getState().tasks[item.id]) {
+        if (editingHere) {
+          retryEditAttachment(item.id, uploadKey)
+        } else {
+          retryDraftAttachment(sessionId, item.id, uploadKey)
+        }
       }
     }
-  }, [apiBaseUrl, attachments, sessionId, uploadKey])
+  }, [apiBaseUrl, attachments, editingHere, sessionId, uploadKey])
 
   useEffect(() => {
     if (!apiKey) {
@@ -129,7 +162,9 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
     if (files.length === 0 || useChatStore.getState().importingHistory || !ensureApiKey()) {
       return
     }
-    const error = addDraftFiles(sessionId, files, uploadKey, recentPhotoId)
+    const error = isEditingTarget()
+      ? addEditFiles(files, uploadKey, recentPhotoId)
+      : addDraftFiles(sessionId, files, uploadKey, recentPhotoId)
     if (error) {
       showToast(error)
     }
@@ -137,31 +172,41 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const retryFile = useCallback(
     (id: string) => {
       if (!useChatStore.getState().importingHistory && uploadKey && ensureApiKey()) {
-        retryDraftAttachment(sessionId, id, uploadKey)
+        if (isEditingTarget()) {
+          retryEditAttachment(id, uploadKey)
+        } else {
+          retryDraftAttachment(sessionId, id, uploadKey)
+        }
       }
     },
-    [sessionId, uploadKey]
+    [isEditingTarget, sessionId, uploadKey]
   )
   const removeFile = useCallback(
     (id: string) => {
       if (!useChatStore.getState().importingHistory) {
-        removeDraftAttachment(sessionId, id)
+        if (isEditingTarget()) {
+          removeEditAttachment(id)
+        } else {
+          removeDraftAttachment(sessionId, id)
+        }
       }
     },
-    [sessionId]
+    [isEditingTarget, sessionId]
   )
   const dragging = useFileDrop(acceptFiles)
 
   /** 转写结果插入到光标处，并把光标移到插入内容之后 */
   const voice = useVoiceInput((transcript) => {
     const textarea = textareaRef.current
-    const current = getDraft(sessionId).text
+    const current = isEditingTarget()
+      ? (useDrafts.getState().editing?.text ?? '')
+      : getDraft(sessionId).text
     const start = textarea?.selectionStart ?? current.length
     const end = textarea?.selectionEnd ?? current.length
     setText(current.slice(0, start) + transcript + current.slice(end))
     if (sendSpoken.current) {
       sendSpoken.current = false
-      if (!useChatStore.getState().importingHistory && ensureApiKey()) {
+      if (!useChatStore.getState().importingHistory && ensureApiKey() && !isEditingTarget()) {
         stopReadAloud()
         sendMessage(sessionId)
       }
@@ -204,8 +249,27 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
     if (android) {
       setTyping(true)
     }
+    textareaRef.current?.focus({ preventScroll: true })
     requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }))
   }, [])
+
+  const editingMessageId = editing?.messageId
+  useLayoutEffect(() => {
+    if (!editingMessageId) {
+      return
+    }
+    cancelVoice()
+    setShowAttachments(false)
+    useVoiceMode.setState({ enabled: false })
+    setTyping(true)
+    const textarea = textareaRef.current
+    if (textarea) {
+      textarea.focus({ preventScroll: true })
+      const end = textarea.value.length
+      textarea.setSelectionRange(end, end)
+      textarea.scrollTop = textarea.scrollHeight
+    }
+  }, [cancelVoice, editingMessageId])
 
   useEffect(() => {
     if (!android) {
@@ -216,17 +280,25 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
         focusComposer()
       }
     }
+    const onDismissExtras = () => {
+      setShowAttachments(false)
+      textareaRef.current?.blur()
+    }
     window.addEventListener('android-focus-composer', onFocusRequest)
-    return () => window.removeEventListener('android-focus-composer', onFocusRequest)
+    window.addEventListener('android-close-attachments', onDismissExtras)
+    return () => {
+      window.removeEventListener('android-focus-composer', onFocusRequest)
+      window.removeEventListener('android-close-attachments', onDismissExtras)
+    }
   }, [focusComposer, sessionId])
 
   // 排队、上传中或上传失败的附件都留在输入框，全部上传成功后才能发送
   const canSend = !importingHistory && !streaming && voice.status === 'idle' && draftReady
-  const showSend = !android || streaming || draftReady || typing
+  const showSend = !android || editingHere || streaming || draftReady || typing
 
-  useAndroidBackInterception(showAttachments)
+  useAndroidBackInterception(showAttachments || editingHere)
   useEffect(() => {
-    if (!showAttachments) {
+    if (!showAttachments && !editingHere) {
       return
     }
     const closeOnBack = (event: Event) => {
@@ -234,11 +306,16 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
         return
       }
       event.preventDefault()
-      setShowAttachments(false)
+      if (showAttachments) {
+        setShowAttachments(false)
+        return
+      }
+      textareaRef.current?.blur()
+      cancelMessageEdit()
     }
     window.addEventListener('android-back', closeOnBack)
     return () => window.removeEventListener('android-back', closeOnBack)
-  }, [showAttachments])
+  }, [showAttachments, editingHere])
 
   useEffect(() => {
     if (!android) {
@@ -263,11 +340,29 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   }, [typing])
 
   const send = () => {
-    if (
-      useChatStore.getState().importingHistory ||
-      voice.status !== 'idle' ||
-      !prepareDraftMessage(getDraft(sessionId), useUploads.getState().tasks, customEndpoint)
-    ) {
+    if (useChatStore.getState().importingHistory || voice.status !== 'idle') {
+      return
+    }
+    const currentEditing = useDrafts.getState().editing
+    if (android && sessionId !== null && currentEditing?.sessionId === sessionId) {
+      const prepared = prepareDraftMessage(
+        currentEditing,
+        useUploads.getState().tasks,
+        customEndpoint
+      )
+      if (
+        !prepared ||
+        !ensureApiKey() ||
+        !editMessage(sessionId, currentEditing.messageId, prepared.text, prepared.files)
+      ) {
+        return
+      }
+      setShowAttachments(false)
+      stopReadAloud()
+      textareaRef.current?.blur()
+      return
+    }
+    if (!prepareDraftMessage(getDraft(sessionId), useUploads.getState().tasks, customEndpoint)) {
       return
     }
     // 文本与上传完成态由提交动作读取最新快照，不使用上一次渲染的草稿。
@@ -289,6 +384,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
     <div className={styles.composer}>
       <div
         data-drawer-gesture-ignore=""
+        data-editing={editingHere ? 'true' : undefined}
         className={clsx(
           styles.wrapper,
           sessionId === null ? styles.home : styles.session,
@@ -300,6 +396,24 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
           }
         }}
       >
+        {editingHere ? (
+          <div className={styles.editBanner}>
+            <span className={styles.editLabel}>{t('androidEditingMessage')}</span>
+            <button
+              type="button"
+              className={styles.editClose}
+              aria-label={t('cancel')}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation()
+                textareaRef.current?.blur()
+                cancelMessageEdit()
+              }}
+            >
+              <IconCloseOutline16 />
+            </button>
+          </div>
+        ) : null}
         {android ? (
           <AndroidDraftAttachments
             items={attachments}
@@ -314,7 +428,10 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
               setPreviewId(id)
             }}
             onSuggestion={(message) => {
-              if (!canSend || getDraft(sessionId).text.trim()) {
+              const latestText = isEditingTarget()
+                ? (useDrafts.getState().editing?.text ?? '')
+                : getDraft(sessionId).text
+              if (!canSend || latestText.trim()) {
                 return
               }
               setText(message)
@@ -359,7 +476,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
               className={clsx(styles.textarea, recording && isMobile && styles.textareaHidden)}
               placeholder={t(
                 android
-                  ? typing
+                  ? editingHere || typing
                     ? 'androidMessageHint'
                     : 'androidHoldHint'
                   : 'chatInputPlaceholderChat'
@@ -375,9 +492,9 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
                 setShowAttachments(false)
               }}
               onBlur={() => setTyping(false)}
-              {...(android ? hold.delayed : {})}
+              {...(android && !editingHere ? hold.delayed : {})}
               onPointerDown={(event) => {
-                if (android && !text && !typing) {
+                if (android && !editingHere && !text && !typing) {
                   hold.delayed.onPointerDown(event)
                 }
               }}
@@ -473,7 +590,9 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
                     setShowAttachments(!showAttachments)
                   }}
                 />
-                {typing || (draftReady && (attachments.length === 0 || text.trim())) ? null : (
+                {typing ||
+                editingHere ||
+                (draftReady && (attachments.length === 0 || text.trim())) ? null : (
                   <IconButton
                     size="xl"
                     tone="primary"
@@ -589,15 +708,17 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
           />
         </>
       ) : null}
-      {android && !importingHistory && preview?.previewUrl ? (
+      {android && !importingHistory && preview && previewView ? (
         <AndroidImageViewer
           key={preview.id}
-          blob={preview.file}
-          name={preview.file.name}
-          source={preview.previewUrl}
+          blob={previewView.blob}
+          name={preview.name}
+          source={previewView.url}
           onClose={() => setPreviewId(undefined)}
           onConfirm={(file) => {
-            const error = replaceDraftImage(sessionId, preview.id, file, uploadKey)
+            const error = editingHere
+              ? replaceEditImage(preview.id, file, uploadKey)
+              : replaceDraftImage(sessionId, preview.id, file, uploadKey)
             if (!error) {
               setPreviewId(undefined)
               focusComposer()

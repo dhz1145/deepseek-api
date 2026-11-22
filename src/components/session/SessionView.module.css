@@ -69,7 +69,18 @@
 }
 
 [data-android] .caveat {
-  color: color-mix(in srgb, var(--dsw-alias-label-tertiary) 26%, var(--dsw-alias-bg-base));
+  color: rgb(222, 223, 225);
+}
+
+[data-android] body[data-ds-dark-theme] .caveat {
+  color: rgb(61, 62, 65);
+}
+
+@supports (color: color-mix(in srgb, red 50%, blue)) {
+  [data-android] .caveat,
+  [data-android] body[data-ds-dark-theme] .caveat {
+    color: color-mix(in srgb, var(--dsw-alias-label-tertiary) 26%, var(--dsw-alias-bg-base));
+  }
 }
 
 [data-android][data-keyboard] .caveat {

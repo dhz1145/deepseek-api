@@ -1,13 +1,12 @@
+import './utils/abort.js'
 import { createRoot } from 'react-dom/client'
 import { App } from './app/App.js'
 import { android } from './app/android.js'
 import { setupTheme } from './app/theme.js'
-import { ensureKatex } from './services/markdown/katex.js'
 import './app/theme.css'
 import './app/global.css'
 import './app/android.css'
 
-ensureKatex()
 if (android) {
   const root = document.documentElement
   const buttonNavigationInset = android.buttonNavigationInset()

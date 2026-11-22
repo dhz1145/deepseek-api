@@ -48,7 +48,11 @@ registerHooks({
 
 globalThis.window = new EventTarget()
 globalThis.document = { visibilityState: 'hidden' }
-const storage = new Map()
+const storage = new Map([
+  ['replica:pinned-sessions', '["existing-session"]'],
+  ['replica:font-size', '5'],
+  ['dsapi:font-size', '4'],
+])
 Object.defineProperty(globalThis, 'localStorage', {
   value: {
     getItem: (key) => storage.get(key) ?? null,
@@ -78,7 +82,19 @@ const {
 const { readSessionFile } = await import('../src/services/chat/history/schema.ts')
 const { toSessionFile } = await import('../src/services/chat/history/toArchive.ts')
 const { sessions, files, loadFile } = await import(databaseMock)
-const { setApiKey, setChatModel, useSettings } = await import('../src/services/settings.ts')
+const { setApiKey, setChatModel, setFontSize, setPinnedSessions, useSettings } =
+  await import('../src/services/settings.ts')
+
+test('旧版设置迁到 dsapi 前缀，不覆盖已经保存的新值', () => {
+  assert.deepEqual(useSettings.getState().pinnedSessions, ['existing-session'])
+  assert.equal(storage.get('dsapi:pinned-sessions'), '["existing-session"]')
+  assert.equal(storage.has('replica:pinned-sessions'), false)
+  assert.equal(useSettings.getState().fontSize, 4)
+  setFontSize(3)
+  assert.equal(storage.get('dsapi:font-size'), '3')
+  assert.equal(storage.has('replica:font-size'), false)
+  setPinnedSessions([])
+})
 
 const notes = (details) =>
   [
@@ -1088,6 +1104,175 @@ test('PPTX 按演示顺序提取幻灯片与备注，XLSX 保留工作表、单�
     await readOfficeText('xlsx', workbook, newSignal()),
     '[工作表 Sales 第 10 行] A10 "Net sales"\tB10 "=SUM(B1:B9) [缓存值 42]"\tC10 "A & B"'
   )
+})
+
+test('官方 chat-demo：旧图片在引用前按长边检查并补传，不修改本地原件', async (t) => {
+  const { resolveObjectURL } = await import('node:buffer')
+  const previousImage = globalThis.Image
+  const previousCreateElement = document.createElement
+  t.after(() => {
+    globalThis.Image = previousImage
+    document.createElement = previousCreateElement
+    respondToFile = undefined
+  })
+  const decoded = []
+  globalThis.Image = class {
+    async decode() {
+      const blob = resolveObjectURL(this.src)
+      const dimensions = await blob.text()
+      decoded.push(dimensions)
+      const match = /^(\d+)x(\d+)$/.exec(dimensions)
+      if (!match) throw new Error('Decode unavailable')
+      this.naturalWidth = Number(match[1])
+      this.naturalHeight = Number(match[2])
+    }
+  }
+  document.createElement = (tag) => {
+    assert.equal(tag, 'canvas')
+    return {
+      getContext: () => ({ drawImage() {} }),
+      toBlob(next, type) {
+        next(new Blob([`${this.width}x${this.height}`], { type }))
+      },
+    }
+  }
+  setApiKey('test-key', null, ['deepseek-flash'], 'messages')
+  const image = (id, dimensions, serverImage) => {
+    const blob = dimensions ? new Blob([dimensions], { type: 'image/png' }) : null
+    if (blob) files.set(id, blob)
+    return {
+      id,
+      name: `${id}.png`,
+      size: blob?.size ?? 0,
+      isImage: true,
+      mimeType: 'image/png',
+      serverId: `file-${id}`,
+      serverImage,
+    }
+  }
+  const large = image('demo-legacy-large', '6000x3000')
+  const small = image('demo-legacy-small', '4096x2048')
+  const missing = image('demo-legacy-missing', null)
+  const unreadable = image('demo-legacy-undecodable', 'undecodable')
+  const known = image('demo-known-large', '3000x6000', { maxEdge: 6000, converted: true })
+  const id = seed([
+    user('legacy-question', 'Inspect legacy images', [large, small, missing, unreadable, known]),
+    reply('legacy-reply', 'Prior answer'),
+  ])
+  const uploads = []
+  respondToFile = async (url, init) => {
+    assert.equal(url, 'https://mock.invalid/anthropic/v1/files')
+    assert.equal(init.method, 'POST')
+    const upload = init.body.get('file')
+    uploads.push([upload.name, upload.type, await upload.text()])
+    return Response.json({ id: `file-fixed-${upload.name}` })
+  }
+  respond = (body) => {
+    const history = body.messages.find(({ role }) => role === 'user')
+    const ids = history.content.filter(({ type }) => type === 'image').map(({ source }) => source.file_id)
+    assert.deepEqual(ids, [
+      'file-fixed-demo-legacy-large.webp',
+      small.serverId,
+      missing.serverId,
+      unreadable.serverId,
+      'file-fixed-demo-known-large.webp',
+    ])
+    return stream('Image references accepted')
+  }
+  setDraftText(id, 'Continue')
+  assert.equal(sendMessage(id), true)
+  const saved = await finish(id)
+  assert.equal(saved.messages.at(-1).status, 'done')
+  assert.deepEqual(uploads, [
+    ['demo-legacy-large.webp', 'image/webp', '4096x2048'],
+    ['demo-known-large.webp', 'image/webp', '2048x4096'],
+  ])
+  assert.deepEqual(saved.messages[0].files[0].serverImage, { maxEdge: 4096, converted: true })
+  assert.deepEqual(saved.messages[0].files[1].serverImage, { maxEdge: 4096, converted: false })
+  assert.equal(await (await loadFile(large.id)).text(), '6000x3000')
+  assert.equal(await (await loadFile(known.id)).text(), '3000x6000')
+
+  decoded.length = 0
+  let customUploadCount = 0
+  const { uploadAttachment } = await import('../src/services/attachments.ts')
+  const original = new File(['6000x3000'], 'new.png', { type: 'image/png' })
+  await uploadAttachment('test-key', 'demo-new-official', original, original.name, true)
+  assert.deepEqual(uploads.at(-1), ['new.webp', 'image/webp', '4096x2048'])
+  assert.ok(setApiKey('other-key', 'https://provider.example/v1', ['external-model'], 'messages'))
+  t.mock.method(globalThis, 'fetch', async (url, { body }) => {
+    assert.equal(url, 'https://provider.example/v1/files')
+    const upload = body.get('file')
+    assert.equal(upload.name, 'new.png')
+    assert.equal(await upload.text(), '6000x3000')
+    customUploadCount++
+    return Response.json({ id: 'file-custom-full-size' })
+  })
+  try {
+    await uploadAttachment('other-key', 'demo-new-custom', original, original.name, true)
+    assert.equal(customUploadCount, 1)
+  } finally {
+    setApiKey('test-key', null, ['deepseek-flash'], 'messages')
+  }
+})
+
+test('官方 chat-demo：不安全的搜索、打开网页及引用链接不生成可点击来源', async () => {
+  const { buildReplyView } = await import('../src/services/chat/view.ts')
+  const searchResult = (url) => ({ type: 'web_search_result', url, title: 'Result', page_age: null })
+  const source = 'https://example.com/safe'
+  const unsafe = 'javascript:example'
+  const { steps, searchResults, answer, sources } = buildReplyView({
+    ...reply('demo-links', ''),
+    blocks: [
+      { type: 'server_tool_use', id: 'search', kind: 'deep_search', input: { action: 'search', queries: ['test'] } },
+      { type: 'web_search_tool_result', tool_use_id: 'search', kind: 'deep_search', content: [searchResult(unsafe), searchResult(source)] },
+      { type: 'server_tool_use', id: 'open', kind: 'deep_search', input: { action: 'open_page', url: 'file:///example' } },
+      { type: 'text', text: 'with sources  ', citations: [{ url: unsafe }, { url: source }] },
+      { type: 'text', text: '\nlocal refs', citations: [{ url: 'data:text/plain,example' }, { url: '/relative' }] },
+    ],
+  }, false)
+  assert.deepEqual(sources.map(({ url }) => url), [source])
+  assert.deepEqual(searchResults.map(({ url }) => url), [source])
+  assert.deepEqual(steps.find(({ type }) => type === 'search').results.map(({ url }) => url), [source])
+  const page = steps.find(({ type }) => type === 'open').pages[0]
+  assert.equal(page.url, undefined)
+  assert.equal(page.title, 'file:///example')
+  assert.equal(answer.markdown, 'with sources[citation:1]  \nlocal refs')
+})
+
+test('官方 chat-demo：附件预览不信任原件 MIME，SVG 没有同源导航地址', async (t) => {
+  const { createFileView, getFileViewType } = await import('../src/services/filePreview.ts')
+  const { resolveObjectURL } = await import('node:buffer')
+  const previousReader = globalThis.FileReader
+  t.after(() => { globalThis.FileReader = previousReader })
+  globalThis.FileReader = class {
+    readAsDataURL(blob) {
+      void blob.arrayBuffer().then((bytes) => {
+        this.result = `data:${blob.type};base64,${Buffer.from(bytes).toString('base64')}`
+        this.onload()
+      })
+    }
+  }
+  const original = new Blob(['<!doctype html>preview'], { type: 'text/html' })
+  const document = await createFileView(original, 'example.html')
+  const raster = await createFileView(original, 'example.PNG')
+  const pdf = await createFileView(original, 'example.pdf')
+  try {
+    assert.equal(original.type, 'text/html')
+    assert.equal(resolveObjectURL(document.url).type, 'application/octet-stream')
+    assert.equal(document.link.download, 'example.html')
+    assert.equal(document.link.target, undefined)
+    assert.equal(resolveObjectURL(raster.url).type, 'image/png')
+    assert.equal(raster.link.target, '_blank')
+    assert.equal(resolveObjectURL(pdf.url).type, 'application/pdf')
+    assert.equal(getFileViewType('file.__proto__'), 'application/octet-stream')
+    const svg = await createFileView(original, 'example.svg')
+    assert.match(svg.url, /^data:image\/svg\+xml;base64,/)
+    assert.equal(svg.link.download, 'example.svg')
+    assert.equal(svg.link.target, undefined)
+    assert.equal(await raster.blob.text(), await original.text())
+  } finally {
+    for (const view of [document, raster, pdf]) URL.revokeObjectURL(view.url)
+  }
 })
 
 const fallbackPng = Buffer.from(

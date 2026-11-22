@@ -1,7 +1,9 @@
 .overlay {
   position: fixed;
   z-index: 23;
-  inset: auto 0 var(--android-button-nav-inset, 0px);
+  right: 0;
+  bottom: var(--android-button-nav-inset, 0px);
+  left: 0;
   height: 46vh;
   height: 46dvh;
   max-height: 340px;

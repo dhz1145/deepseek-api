@@ -41,7 +41,7 @@ async function until(label, check) {
 }
 
 async function launch() {
-  adb('shell', 'am', 'start', '-n', `${appId}/io.github.lijiahua1024.dsreplica.MainActivity`)
+  adb('shell', 'am', 'start', '-n', `${appId}/io.github.dhz1145.dsapi.MainActivity`)
   const pid = await until('The app process did not start', () =>
     adb('shell', `pidof ${appId} || true`)
   )
@@ -123,6 +123,7 @@ const password = 'input[aria-label="DeepSeek API Key"][type=password]'
 const composer = '[data-drawer-open] textarea'
 const chatTitle = `Android compatibility test chat ${Date.now()}`
 const question = 'Android compatibility smoke test'
+const attachmentName = 'chat-demo-wide.png'
 const streamReply = 'Android WebView streamed this reply.'
 const formattedReply = `${streamReply}\n\n**Bold** and $x^2$.`
 const openSidebar =
@@ -229,8 +230,31 @@ try {
         return Promise.resolve(new Response(valid ? '{"data":[{"id":"deepseek-flash"},{"id":"example-model"}]}' : '{"error":{"message":"Rejected test key"}}',
           { status: valid ? 200 : 401, headers: { 'Content-Type': 'application/json' } }));
       }
+      if (url.pathname === '/anthropic/v1/files' && call.method === 'POST' && new Headers(headers).get('x-api-key') === 'android-compat-test') {
+        return (async () => {
+          const body = new Response(new Uint8Array(call.bytes), { headers });
+          const form = await body.formData();
+          const file = form.get('file');
+          const imageUrl = URL.createObjectURL(file);
+          try {
+            const image = new Image();
+            image.src = imageUrl;
+            await image.decode();
+            window.testUploadedImage = {width: image.naturalWidth, name: file.name};
+          } finally {
+            URL.revokeObjectURL(imageUrl);
+          }
+          return new Response('{"id":"file-smoke-demo-image"}', {headers: {'Content-Type': 'application/json'}});
+        })().catch(error => {
+          window.testImageUploadError = String(error);
+          throw error;
+        });
+      }
       if (url.pathname === '/anthropic/v1/messages' && call.method === 'POST' && new Headers(headers).get('x-api-key') === 'android-compat-test') {
-        if (JSON.parse(new TextDecoder().decode(new Uint8Array(call.bytes))).model !== 'example-model') {
+        const body = JSON.parse(new TextDecoder().decode(new Uint8Array(call.bytes)));
+        window.testSentImage = body.messages.some((message) => Array.isArray(message.content)
+          && message.content.some((part) => part.type === 'image' && part.source.file_id === 'file-smoke-demo-image'));
+        if (body.model !== 'example-model') {
           return Promise.reject(new Error('Unexpected model in Messages request'));
         }
         const stream = new ReadableStream({ start(controller) {
@@ -309,12 +333,48 @@ try {
     evaluate(`document.querySelector(${JSON.stringify(composer)}).value === ${JSON.stringify(question + '\n')}`)
   )
   assert.equal(await evaluate(`document.body.innerText.includes(${JSON.stringify(streamReply)})`), false)
+  await evaluate(`(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 4400;
+    canvas.height = 20;
+    canvas.getContext('2d').fillRect(0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    const data = new DataTransfer();
+    data.items.add(new File([blob], ${JSON.stringify(attachmentName)}, {type: 'image/png'}));
+    document.dispatchEvent(new DragEvent('drop', {dataTransfer: data, cancelable: true}));
+  })()`)
+  const draftImage = `Array.from(document.querySelectorAll('button[aria-label]')).find((button) =>
+    button.getAttribute('aria-label').includes(${JSON.stringify(attachmentName)}) && button.querySelector('img'))`
+  await until('Original image should remain visible in the Android draft', () =>
+    evaluate(`${draftImage}?.querySelector('img')?.naturalWidth === 4400`)
+  )
+  const uploaded = await until('Native Files request should upload a resized image', async () => {
+    const error = await evaluate('window.testImageUploadError')
+    if (error) throw new Error(error)
+    return evaluate('window.testUploadedImage')
+  })
+  assert.equal(uploaded.width, 4096)
+  assert.match(uploaded.name, /^chat-demo-wide\.(webp|png)$/)
+  await evaluate(`${draftImage}.click()`)
+  await until('Android native image viewer should open the original large image', () =>
+    evaluate(`document.querySelector('dialog[open] img')?.naturalWidth === 4400`)
+  )
+  adb('shell', 'input', 'keyevent', 'KEYCODE_BACK')
+  await until('Android back should close the draft image viewer', () =>
+    evaluate(`!document.querySelector('dialog[open]')`)
+  )
+  await until('Send should be enabled after Files upload', () =>
+    evaluate(`Array.from(document.querySelectorAll('button[aria-label]')).some((button) =>
+      ['Send', '发送'].includes(button.getAttribute('aria-label')) && !button.disabled)`)
+  )
   await evaluate(
     'document.querySelector(\'button[aria-label="Send"], button[aria-label="发送"]\').click()'
   )
   await until('The conversation did not render the streamed reply', () =>
     evaluate(`document.body.innerText.includes(${JSON.stringify(streamReply)})`)
   )
+  assert.equal(await evaluate('window.testSentImage'), true)
+  console.log('PASS native Files HTTPS bridge uploads the resized copy and the Android viewer keeps the original')
   if ((await evaluate(layout(composer))).height < chat.height - 40) {
     adb('shell', 'input', 'keyevent', 'KEYCODE_BACK')
   }
@@ -435,8 +495,12 @@ try {
       return text.includes(${JSON.stringify(question)}) && text.includes(${JSON.stringify(streamReply)});
     })()`)
   )
+  await until('The original attachment should be restored from local history', () =>
+    webview.evaluate(`Array.from(document.querySelectorAll('main img')).some((image) =>
+      image.alt === ${JSON.stringify(attachmentName)} && image.naturalWidth === 4400)`)
+  )
   assert.deepEqual(webview.exceptions, [])
-  console.log('PASS cold start with the API key and completed conversation persisted locally')
+  console.log('PASS cold start with the API key, original attachment and completed conversation persisted locally')
 
   const updateDialog = `document.querySelector('[role="dialog"]')`
   const update = (status) =>

@@ -47,28 +47,24 @@ type Settings = {
 
 const KEYS = {
   apiKey: 'chat-demo:api-key',
-  chatModel: 'replica:chat-model',
-  accountProfile: 'replica:account-profile',
+  chatModel: 'dsapi:chat-model',
+  accountProfile: 'dsapi:account-profile',
   locale: 'chat-demo:locale',
   location: 'chat-demo:location',
   themePreference: 'chat-demo:theme-preference',
   ttsVoice: 'chat-demo:tts-voice',
-  autoRead: 'replica:auto-read',
+  autoRead: 'dsapi:auto-read',
   thinking: 'chat-demo:thinking',
   search: 'chat-demo:search',
   siderCollapsed: 'chat-demo:sider-collapsed',
-  fontSize: 'replica:font-size',
-  foldThinking: 'replica:fold-thinking',
-  pinnedSessions: 'replica:pinned-sessions',
+  fontSize: 'dsapi:font-size',
+  foldThinking: 'dsapi:fold-thinking',
+  pinnedSessions: 'dsapi:pinned-sessions',
 } as const
 
-const read = (key: string) => {
-  try {
-    return localStorage.getItem(key)
-  } catch {
-    return null
-  }
-}
+// Keep settings from existing installs when switching the project's key prefix.
+const legacyKey = (key: string) =>
+  key.startsWith('dsapi:') ? key.replace('dsapi:', 'replica:') : null
 
 const write = (key: string, value: string | null) => {
   try {
@@ -77,9 +73,24 @@ const write = (key: string, value: string | null) => {
     } else {
       localStorage.setItem(key, value)
     }
+    const previousKey = legacyKey(key)
+    if (previousKey) localStorage.removeItem(previousKey)
     return true
   } catch {
     return false
+  }
+}
+
+const read = (key: string) => {
+  try {
+    const value = localStorage.getItem(key)
+    const previousKey = value === null ? legacyKey(key) : null
+    if (!previousKey) return value
+    const previous = localStorage.getItem(previousKey)
+    if (previous !== null) write(key, previous)
+    return previous
+  } catch {
+    return null
   }
 }
 

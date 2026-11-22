@@ -85,9 +85,9 @@ try {
       'Usage: node scripts/compare-pixels.mjs REF ACTUAL [--crop x,y,w,h] [--frames ref,actual]'
     )
   }
-  const [reference, replica] = positionals.map((file) => resolve(file))
+  const [reference, candidate] = positionals.map((file) => resolve(file))
   const size = dimensions(reference)
-  const actualSize = dimensions(replica)
+  const actualSize = dimensions(candidate)
   if (actualSize.width !== size.width || actualSize.height !== size.height) {
     throw new Error('Capture dimensions must match')
   }
@@ -100,7 +100,7 @@ try {
   const crop = { x, y, width, height }
   const [first, second] = numbers(values.frames, 2)
   const expected = frame(reference, first, crop)
-  const actual = frame(replica, second, crop)
+  const actual = frame(candidate, second, crop)
   let changed = 0
   let maxChannelDelta = 0
   let totalChannelDelta = 0

@@ -143,6 +143,7 @@
 }
 
 .regionSelect {
+  max-width: 285px;
   max-width: min(285px, 100%);
 }
 

@@ -3,7 +3,9 @@ import clsx from 'clsx'
 import { memo, useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { android } from '../../app/android.js'
 import { useIsMobile } from '../../app/viewport.js'
+import { isFileViewImage } from '../../services/filePreview.js'
 import { IconCopyOutline16, IconEditOutline16, IconSelectTextOutline16 } from '../base/icons.js'
+import { startMessageEdit } from '../../services/chat/drafts.js'
 import { editMessage, retryUpload } from '../../services/chat/store.js'
 import { stopReadAloud } from '../../services/speech/readAloud.js'
 import type { UserMessage as UserMessageType } from '../../services/chat/types.js'
@@ -30,6 +32,7 @@ export const UserMessage = memo(function UserMessage({
   isFirst,
   isLast,
   busy,
+  editingTarget = false,
   versions,
   onSelectVersion,
 }: {
@@ -40,6 +43,7 @@ export const UserMessage = memo(function UserMessage({
   isFirst: boolean
   isLast: boolean
   busy: boolean
+  editingTarget?: boolean
   versions: MessageVersions
   onSelectVersion: SelectMessageVersion
 }) {
@@ -70,11 +74,17 @@ export const UserMessage = memo(function UserMessage({
   }
 
   const startEdit = () => {
-    if (!busy) {
-      setSelecting(false)
-      setDraft(message.content)
-      setEditing(true)
+    if (busy) {
+      return
     }
+    setSelecting(false)
+    if (android) {
+      startMessageEdit(sessionId, message)
+      window.dispatchEvent(new CustomEvent('android-focus-composer', { detail: sessionId }))
+      return
+    }
+    setDraft(message.content)
+    setEditing(true)
   }
 
   const stopSelecting = useCallback(() => {
@@ -92,12 +102,16 @@ export const UserMessage = memo(function UserMessage({
   }
 
   return (
-    <div className={clsx(styles.container, isFirst && styles.isFirst)}>
+    <div
+      className={clsx(styles.container, isFirst && styles.isFirst)}
+      data-editing-target={editingTarget ? 'true' : undefined}
+    >
       {message.files.length > 0 ? (
         <div
           className={clsx(
             styles.files,
-            message.files.some((file) => !file.isImage) && styles.filesWithDocuments
+            message.files.some((file) => !isFileViewImage(file.name) || (android && !file.isImage)) &&
+              styles.filesWithDocuments
           )}
         >
           {message.files.map((file) => (
@@ -155,6 +169,7 @@ export const UserMessage = memo(function UserMessage({
             <div
               ref={bubbleRef}
               className={styles.bubble}
+              data-editing-bubble={editingTarget ? 'true' : undefined}
               role={android ? 'button' : undefined}
               tabIndex={android ? 0 : undefined}
               aria-disabled={android && busy ? true : undefined}

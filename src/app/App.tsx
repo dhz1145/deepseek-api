@@ -26,6 +26,7 @@ import { showToast } from '../components/base/toastState.js'
 import { onUploadNotice } from '../services/attachments.js'
 import { Button } from '../components/base/Button.js'
 import { stopReadAloud } from '../services/speech/readAloud.js'
+import { setInert } from '../utils/inert.js'
 import { CollapsedSider } from '../components/sider/CollapsedSider.js'
 import { closeMobileSider, useMobileSider } from '../components/sider/mobileSiderState.js'
 import { MobileSider, Sider } from '../components/sider/Sider.js'
@@ -103,7 +104,6 @@ export const App = () => {
   const model = useSettings((state) => state.chatModel)
   const needsApiSetup = Boolean(android && (!apiKey || !model))
   const drawerOpen = useMobileSider((state) => state.open)
-  const drawerGesture = useAndroidDrawerGesture()
   const mainRef = useRef<HTMLElement>(null)
   const locale = useSettings((state) => state.locale)
   const fontSize = useSettings((state) => state.fontSize)
@@ -113,6 +113,10 @@ export const App = () => {
   const saveError = Object.values(saveErrors).some(Boolean)
   const importingHistory = useChatStore((state) => state.importingHistory)
   const frameRef = useMobileViewport(isMobile && !needsApiSetup)
+  const drawerGesture = useAndroidDrawerGesture(
+    frameRef,
+    Boolean(android && isMobile && !needsApiSetup)
+  )
   const activeId = useChatStore((state) => state.activeId)
 
   useAndroidBackInterception(drawerOpen)
@@ -130,9 +134,7 @@ export const App = () => {
   }, [fontSize])
 
   useEffect(() => {
-    if (mainRef.current) {
-      mainRef.current.inert = Boolean(android && isMobile && drawerOpen)
-    }
+    setInert(mainRef.current, Boolean(android && isMobile && drawerOpen))
   }, [drawerOpen, isMobile, needsApiSetup])
 
   // 文件数、存储空间达到上限时，附件上只显示「上传失败」，原因用 toast 说明

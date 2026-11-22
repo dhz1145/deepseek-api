@@ -68,6 +68,11 @@ export const createConfig = ({
     generator: { 'css/module': { localIdentName: '[local]-[hash:6]' } },
     rules: [
       { test: /\.module\.css$/, type: 'css/module', use: [cssLoader] },
+      {
+        test: /[\\/]katex[\\/]dist[\\/]katex\.min\.css$/,
+        enforce: 'pre',
+        use: path.resolve(root, 'scripts/katex-woff2-loader.cjs'),
+      },
       { test: /\.css$/, exclude: /\.module\.css$/, type: 'css', use: [cssLoader] },
       {
         test: /\.(?:[cm]?js|jsx|tsx?)$/,

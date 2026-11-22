@@ -1,4 +1,5 @@
 import { APP_DOWNSAMPLE_PIXELS, MAX_IMAGE_EDGE } from '../../services/imageUpload.js'
+import { readBlobBuffer } from '../../utils/blob.js'
 
 export type Size = { width: number; height: number }
 export type Point = { x: number; y: number }
@@ -121,7 +122,7 @@ const toBlob = (canvas: HTMLCanvasElement, type: string, quality?: number) =>
   new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, type, quality))
 
 export const freezeAnimatedImage = async (file: Blob) => {
-  const header = new Uint8Array(await file.slice(0, 24).arrayBuffer())
+  const header = new Uint8Array(await readBlobBuffer(file.slice(0, 24)))
   const label = (offset: number, length: number) =>
     String.fromCharCode(...header.subarray(offset, offset + length))
   const animated =
@@ -150,7 +151,7 @@ export const freezeAnimatedImage = async (file: Blob) => {
 
 const isAnimatedPng = async (file: Blob) => {
   for (let offset = 8; offset + 8 <= file.size; ) {
-    const chunk = new DataView(await file.slice(offset, offset + 8).arrayBuffer())
+    const chunk = new DataView(await readBlobBuffer(file.slice(offset, offset + 8)))
     const kind = chunk.getUint32(4)
     if (kind === 0x6163544c) {
       // acTL

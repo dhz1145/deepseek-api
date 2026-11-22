@@ -138,9 +138,10 @@
 .ds-markdown ol ol {
   list-style-position: inside;
   padding-left: 0;
-  li p {
-    display: inline;
-  }
+}
+.ds-markdown ul ol li p,
+.ds-markdown ol ol li p {
+  display: inline;
 }
 
 .ds-markdown hr {

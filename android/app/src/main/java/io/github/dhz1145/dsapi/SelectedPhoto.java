@@ -1,4 +1,4 @@
-package io.github.lijiahua1024.dsreplica;
+package io.github.dhz1145.dsapi;
 
 import android.content.ContentResolver;
 import android.graphics.Bitmap;

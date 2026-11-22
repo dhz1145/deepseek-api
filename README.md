@@ -16,7 +16,7 @@
 
 ---
 
-本项目最初基于 [LiJiaHua1024/deepseek-app-replica](https://github.com/LiJiaHua1024/deepseek-app-replica)，是我根据自己的使用习惯修改的版本。感谢原项目作者；本版独立发布，不是 DeepSeek 官方应用，也不会从上游仓库获取更新。
+本项目最初基于 [LiJiaHua1024/deepseek-app-replica](https://github.com/LiJiaHua1024/deepseek-app-replica)。DeepSeek API 由 [dhz1145](https://github.com/dhz1145) 根据自己的使用习惯修改并独立维护。感谢原项目作者。本版不是 DeepSeek 官方应用，应用内更新来自本仓库。
 
 与官方客户端的区别在于未接入官方账号体系，改为直接输入用户自己的 DeepSeek 开放平台 API Key。官方 App 通过账号登录受限于日常用量配额，而直接接入个人 API Key 采用按量计费（Pay-as-you-go），只要账户额度充裕即可自由使用不受限额打断；同时所有会话数据均保存在设备本地。
 
@@ -40,6 +40,8 @@
 ---
 
 ## 技术架构
+
+聊天内核源自 DeepSeek 官方 [chat-demo](https://github.com/deepseek-ai/chat-demo)，已同步 [v0.1.3](https://github.com/deepseek-ai/chat-demo/releases/tag/v0.1.3) 的回复链接和附件处理逻辑。Android 仍由原生 HTTPS 层访问 API，不改用浏览器跨域请求；官方图片上传采用 4096 像素长边限制，保留本地原件，自定义服务沿用原有策略。
 
 项目采用 Android 原生容器承载高性能 Web 交互内核的架构：
 
@@ -71,7 +73,7 @@ pnpm install
 
 ### 维护者：发布更新
 
-在 `main` 上提交本次修改，将 `package.json` 中的 `version` 提升一版，并递增 `android/app/build.gradle` 中的 `versionCode`。签名文件 `android/app/release.jks` 与 `android/keystore.properties` 只保存在本机；请在安全的位置备份，后续所有版本都用同一把签名密钥。不要把这两个文件提交到 Git。
+在 `main` 上提交本次修改，将 `package.json` 中的 `version` 提升一版，并递增 `android/app/build.gradle` 中的 `versionCode`。签名文件 `android/app/release.jks` 与 `android/keystore.properties` 只保存在本机；在 `keystore.properties` 中用 `keyAlias` 指定现有签名密钥的别名（默认 `dsapi`）。请在安全的位置备份，后续所有版本都用同一把签名密钥。不要把这两个文件提交到 Git。
 
 本地安装依赖，使用有本仓库写入权限的账号登录 GitHub CLI（`gh auth login`），然后运行：
 

@@ -6,7 +6,11 @@ import { isCustomAnthropicAddress } from './api/address.js'
 import { ApiError, uploadFile } from './api/client.js'
 import { classifyApiError, getUploadErrorInfo, isRetryableApiError } from './api/errors.js'
 import type { FilePurpose } from './api/types.js'
-import { prepareImageUpload, type UploadedImage } from './imageUpload.js'
+import {
+  OFFICIAL_FILE_IMAGE_MAX_EDGE,
+  prepareImageUpload,
+  type UploadedImage,
+} from './imageUpload.js'
 import { useSettings } from './settings.js'
 import { ACCEPT_FILE_EXTS } from './uploadExts.js'
 
@@ -150,7 +154,10 @@ const sendAttachment = async (
 
   let prepared = await prepareImageUpload(file, signal, maxEdge, forceConversion)
   throwIfAborted(signal)
-  if (forceConversion && !prepared.image?.converted) {
+  if (
+    (forceConversion && !prepared.image?.converted) ||
+    (maxEdge !== undefined && (prepared.image?.maxEdge ?? 0) > maxEdge)
+  ) {
     throw new ApiError('protocol', { key: 'uploadParseFailed' })
   }
   try {
@@ -257,9 +264,13 @@ export const uploadAttachment = (
   }
   const controller = new AbortController()
   setTask(id, { status: 'uploading' })
+  // 固定这次上传的限制；自定义 Anthropic 服务仍保留原有策略。
   const { apiBaseUrl, chatConfig } = useSettings.getState()
+  const resolvedOptions = chatConfig.endpoint
+    ? options
+    : { ...options, maxEdge: Math.min(options.maxEdge ?? Infinity, OFFICIAL_FILE_IMAGE_MAX_EDGE) }
   const allowInlineImage = isImage && isCustomAnthropicAddress(apiBaseUrl, chatConfig.format)
-  const promise = enqueueUpload(apiKey, blob, name, isImage, controller.signal, options)
+  const promise = enqueueUpload(apiKey, blob, name, isImage, controller.signal, resolvedOptions)
     .catch((error: unknown): AttachmentUpload => {
       if (allowInlineImage && !controller.signal.aborted && missingFilesEndpoint(error)) {
         return { serverId: null }

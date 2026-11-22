@@ -1,6 +1,7 @@
 import { useTranslate } from '../../i18n/index.js'
 import { android } from '../../app/android.js'
 import { useSettings } from '../../services/settings.js'
+import { setInert } from '../../utils/inert.js'
 import clsx from 'clsx'
 import { memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
@@ -87,9 +88,7 @@ export const ReplyArea = memo(function ReplyArea({
   useTicker(titleActive, 1000)
 
   useLayoutEffect(() => {
-    if (clipRef.current) {
-      clipRef.current.inert = !open
-    }
+    setInert(clipRef.current, !open)
   }, [open, view.steps.length])
 
   useLayoutEffect(() => {
@@ -433,16 +432,23 @@ const ToolRow = ({
 
 const PageLink = ({ page, failedTip }: { page: PageItem; failedTip?: string }) => (
   <span
-    className={clsx(styles.page, page.status === 'failed' ? styles.pageFailed : styles.pageDone)}
+    className={clsx(
+      styles.page,
+      page.status === 'failed' || !page.url ? styles.pageFailed : styles.pageDone
+    )}
   >
     {page.status === 'failed' ? (
       <Tooltip content={failedTip}>
         <span className={styles.pageText}>{page.title}</span>
       </Tooltip>
     ) : (
-      <a className={styles.pageText} href={page.url} target="_blank" rel="noreferrer">
-        {page.title}
-      </a>
+      page.url ? (
+        <a className={styles.pageText} href={page.url} target="_blank" rel="noreferrer">
+          {page.title}
+        </a>
+      ) : (
+        <span className={styles.pageText}>{page.title}</span>
+      )
     )}
     <span className={styles.pageIcon}>
       <IconRightUpOutline14 />

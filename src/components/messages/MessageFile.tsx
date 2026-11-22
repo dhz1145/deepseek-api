@@ -1,43 +1,20 @@
 import clsx from 'clsx'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { android } from '../../app/android.js'
 import { useTranslate } from '../../i18n/index.js'
 import { useUploads } from '../../services/attachments.js'
-import { loadFile } from '../../services/chat/db.js'
 import { addDraftFiles } from '../../services/chat/drafts.js'
 import { useChatStore } from '../../services/chat/store.js'
 import type { FileAttachment } from '../../services/chat/types.js'
+import { isFileViewImage } from '../../services/filePreview.js'
 import { useSettings } from '../../services/settings.js'
 import { IconPhotoErrorFill20, IconRefreshOutline16 } from '../base/icons.js'
 import { Tooltip } from '../base/Tooltip.js'
 import { AndroidImageViewer } from '../files/AndroidImageViewer.js'
 import { FileCard } from '../files/FileCard.js'
+import { useFileView } from '../files/useFileView.js'
 import { ensureApiKey } from '../settings/settingsDialogState.js'
 import styles from './MessageFile.module.css'
-
-type FileSource = { blob: Blob; url: string }
-
-/** 原件从 IndexedDB 读出并生成本地地址；undefined 表示加载中，null 表示原件缺失。 */
-const useFileSource = (id: string) => {
-  const [fileSource, setFileSource] = useState<{ id: string; source: FileSource | null }>()
-  useEffect(() => {
-    let objectUrl: string | null = null
-    let cancelled = false
-    loadFile(id).then((blob) => {
-      if (!cancelled) {
-        objectUrl = blob ? URL.createObjectURL(blob) : null
-        setFileSource({ id, source: blob && objectUrl ? { blob, url: objectUrl } : null })
-      }
-    })
-    return () => {
-      cancelled = true
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl)
-      }
-    }
-  }, [id])
-  return fileSource?.id === id ? fileSource.source : undefined
-}
 
 /** 历史或失效附件的补传状态：只在还没有 serverId 时显示 */
 const useUploadState = (file: FileAttachment) =>
@@ -66,7 +43,7 @@ export const MessageFile = ({
   onRetry: (() => void) | null
 }) => {
   const t = useTranslate()
-  const source = useFileSource(file.id)
+  const source = useFileView(file.id, file.name)
   const url = source?.url
   const [failedUrl, setFailedUrl] = useState<string | null>(null)
   const [viewedUrl, setViewedUrl] = useState<string>()
@@ -78,7 +55,7 @@ export const MessageFile = ({
 
   const retry = retryable ? onRetry : null
 
-  if (file.isImage && source !== null) {
+  if (isFileViewImage(file.name) && (!android || file.isImage) && source !== null) {
     const preview = url ? (
       failedUrl === url ? (
         <span className={styles.failedIcon} role="img" aria-label={file.name}>
@@ -191,13 +168,11 @@ export const MessageFile = ({
       )
     }
 
-    // 桌面端仍用新标签打开原件。
-    return url ? (
+    // 桌面端图片沿用预览链接，SVG 只能下载，不能作为同源文档打开。
+    return source ? (
       <a
         className={clsx(styles.image, styles.imageThumb)}
-        href={url}
-        target="_blank"
-        rel="noreferrer"
+        {...source.link}
         title={file.name}
       >
         {preview}
@@ -215,9 +190,7 @@ export const MessageFile = ({
       status={uploading ? 'uploading' : failed ? 'error' : 'done'}
       error={errorText}
       onRetry={retry ?? undefined}
-      onOpen={
-        !android && url && !upload ? () => window.open(url, '_blank', 'noreferrer') : undefined
-      }
+      link={!android && !upload ? source?.link : undefined}
     />
   )
 }

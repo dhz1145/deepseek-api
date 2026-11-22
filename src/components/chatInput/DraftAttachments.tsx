@@ -1,11 +1,14 @@
 import clsx from 'clsx'
 import { memo } from 'react'
+import { android } from '../../app/android.js'
 import { useTranslate } from '../../i18n/index.js'
 import { useUploads, type UploadTask } from '../../services/attachments.js'
 import type { DraftAttachment } from '../../services/chat/drafts.js'
-import { IconCloseFill14, IconRefreshOutline16 } from '../base/icons.js'
+import { IconCloseFill14, IconPhotoErrorFill20, IconRefreshOutline16 } from '../base/icons.js'
 import { Tooltip } from '../base/Tooltip.js'
 import { FileCard } from '../files/FileCard.js'
+import { isFileViewImage } from '../../services/filePreview.js'
+import { useFileView } from '../files/useFileView.js'
 import styles from './ChatInput.module.css'
 
 const UPLOADING: UploadTask = { status: 'uploading' }
@@ -60,31 +63,44 @@ const AttachmentItem = ({
   onPreview?: () => void
 }) => {
   const t = useTranslate()
+  const view = useFileView(item.file ?? (item.existing && item.isImage ? item.id : undefined), item.name)
   const task = useUploads((state) => state.tasks[item.id] ?? UPLOADING)
-  const status = ready ? 'done' : task.status
-  const error = !ready && task.status === 'error' ? t(task.error.key, task.error.params) : undefined
+  const status = ready || item.existing ? 'done' : task.status
+  const error =
+    status === 'error' && task.status === 'error' ? t(task.error.key, task.error.params) : undefined
   // 过大、格式不支持等重试无效的失败只提示原因，需删除后再发送
-  const retry = !ready && task.status === 'error' && task.retryable ? onRetry : undefined
+  const retry =
+    status === 'error' && task.status === 'error' && task.retryable ? onRetry : undefined
   const failed = status === 'error'
   const retryLabel = t('uploadRetry', { message: error ?? t('uploadFileStatusFailed') })
   // 「上传失败」只显示重试图标，其余原因写在图片上：可重试时在图标下方，不可重试时贴底
   const showReason = failed && error !== undefined && error !== t('uploadFileStatusFailed')
-  return item.previewUrl ? (
+  const preview = view ? <img src={view.url} alt={onPreview ? '' : item.name} /> : null
+  const historicalImage = android && item.existing && item.isImage
+  return historicalImage || (view && isFileViewImage(item.name) && (!android || item.isImage)) ? (
     <div
       className={clsx(styles.attachment, failed && styles.attachmentFailed)}
-      title={error ?? item.file.name}
+      title={error ?? item.name}
     >
-      {onPreview ? (
+      {view && onPreview ? (
         <button
           type="button"
           className={styles.previewImage}
-          aria-label={t('androidPreviewDraftImage', { name: item.file.name })}
+          aria-label={t('androidPreviewDraftImage', { name: item.name })}
           onClick={onPreview}
         >
-          <img src={item.previewUrl} alt="" />
+          {preview}
         </button>
+      ) : !android && view && status === 'done' ? (
+        <a className={styles.previewImage} {...view.link} aria-label={item.name}>
+          {preview}
+        </a>
+      ) : historicalImage && view === null ? (
+        <span className={styles.missingImage} role="img" aria-label={item.name}>
+          <IconPhotoErrorFill20 />
+        </span>
       ) : (
-        <img src={item.previewUrl} alt={item.file.name} />
+        preview
       )}
       {status === 'uploading' ? <div className={styles.uploading} /> : null}
       {failed && retry ? (
@@ -111,12 +127,13 @@ const AttachmentItem = ({
     </div>
   ) : (
     <FileCard
-      name={item.file.name}
-      size={item.file.size}
+      name={item.name}
+      size={item.size}
       status={status}
       error={error}
       onRetry={retry}
       onRemove={onRemove}
+      link={android ? undefined : view?.link}
     />
   )
 }

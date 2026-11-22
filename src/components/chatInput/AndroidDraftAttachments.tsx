@@ -52,27 +52,9 @@ export const AndroidDraftAttachments = ({
     if (displayed.length === 0) {
       return
     }
-    // 草稿移除时原预览 URL 已释放，退出动画持有独立 URL。
-    const retained = displayed.map((item) => ({
-      ...item,
-      previewUrl: item.isImage ? URL.createObjectURL(item.file) : null,
-    }))
-    setDisplayed(retained)
-    const release = () => {
-      retained.forEach((item) => {
-        if (item.previewUrl) {
-          URL.revokeObjectURL(item.previewUrl)
-        }
-      })
-    }
-    const timer = window.setTimeout(() => {
-      setDisplayed([])
-      release()
-    }, TRANSITION_MS)
-    return () => {
-      window.clearTimeout(timer)
-      release()
-    }
+    // 退出动画继续挂载之前的附件；预览随对应组件卸载统一释放。
+    const timer = window.setTimeout(() => setDisplayed([]), TRANSITION_MS)
+    return () => window.clearTimeout(timer)
     // displayed is the previous snapshot; changing it must not restart the exit timer.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items])
