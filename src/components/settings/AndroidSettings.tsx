@@ -48,6 +48,7 @@ import { ChatModelField } from './ChatModelField.js'
 import { createSettingsPageMotion } from './androidSettingsMotion.js'
 import { ProfileIcon } from './ProfileAvatar.js'
 import { ProfileEditor } from './ProfileEditor.js'
+import { SettingsChoice } from './SettingsChoice.js'
 import { closeSettings, useSettingsDialog } from './settingsDialogState.js'
 import styles from './AndroidSettings.module.css'
 
@@ -168,58 +169,6 @@ const Switch = ({
   </button>
 )
 
-const Choice = <T extends string>({
-  title,
-  icon,
-  value,
-  fields,
-  confirm,
-  dismiss,
-}: {
-  title: string
-  icon?: ReactNode
-  value: T
-  fields: ReadonlyArray<{ id: T; label: string }>
-  confirm: (value: T) => void
-  dismiss: () => void
-}) => {
-  const t = useTranslate()
-  const [next, setNext] = useState(value)
-  return (
-    <div
-      className={styles.overlay}
-      onClick={(event) => {
-        if (event.target === event.currentTarget) {
-          dismiss()
-        }
-      }}
-    >
-      <section className={styles.choice} role="dialog" aria-modal="true" aria-label={title}>
-        <header>
-          {icon}
-          {title}
-        </header>
-        <div className={styles.options} role="radiogroup" aria-label={title}>
-          {fields.map((field) => (
-            <button
-              key={field.id}
-              type="button"
-              role="radio"
-              aria-checked={next === field.id}
-              onClick={() => setNext(field.id)}
-            >
-              {field.label}
-            </button>
-          ))}
-        </div>
-        <button type="button" className={styles.confirm} onClick={() => confirm(next)}>
-          {t('confirm')}
-        </button>
-      </section>
-    </div>
-  )
-}
-
 export const AndroidSettings = ({ chatFrame }: { chatFrame: RefObject<HTMLDivElement> }) => {
   const open = useSettingsDialog((state) => state.open)
   const section = useSettingsDialog((state) => state.section)
@@ -272,6 +221,8 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
       setUpdateFallback(
         status.message === 'checkFailed' ||
           status.message === 'downloadFailed' ||
+          status.message === 'apkContents' ||
+          status.message === 'invalidApk' ||
           status.message === 'installerUnavailable'
       )
     }
@@ -852,7 +803,7 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
   const popups = (
     <>
       {popup === 'locale' ? (
-        <Choice
+        <SettingsChoice
           title={language}
           icon={<IconGlobeLanguageOutline14 />}
           value={localePreference}
@@ -865,7 +816,7 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
         />
       ) : null}
       {popup === 'theme' ? (
-        <Choice
+        <SettingsChoice
           title={appearance}
           value={themePreference}
           fields={themes}

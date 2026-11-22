@@ -283,6 +283,47 @@ a.row:active,
   }
 }
 
+.choiceOverlay {
+  --settings-card: #fff;
+  --settings-line: #ececec;
+  z-index: 1001;
+  color: var(--dsw-alias-label-primary);
+}
+
+[data-ds-dark-theme] .choiceOverlay {
+  --settings-card: #242424;
+  --settings-line: #353535;
+}
+
+.choiceField {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  svg {
+    flex-shrink: 0;
+  }
+
+  &:disabled {
+    opacity: 0.5;
+  }
+}
+
 .choice {
   display: flex;
   flex-direction: column;
@@ -312,6 +353,7 @@ a.row:active,
 .options {
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   border-top: 1px solid var(--settings-line);
   border-bottom: 1px solid var(--settings-line);
 
@@ -320,8 +362,10 @@ a.row:active,
     align-items: center;
     gap: 17px;
     width: 100%;
-    height: 54px;
-    padding: 0 18px;
+    min-height: 54px;
+    padding: 8px 18px;
+    overflow-wrap: anywhere;
+    word-break: break-word;
     border: 0;
     background: transparent;
     color: inherit;
@@ -359,6 +403,10 @@ a.row:active,
   min-height: 48px;
   background: transparent;
   color: var(--dsw-alias-brand-text);
+
+  &:disabled {
+    opacity: 0.5;
+  }
 }
 
 .row[data-danger='true'],

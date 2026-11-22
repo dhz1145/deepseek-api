@@ -130,6 +130,63 @@ public class UpdateReleaseTest {
         }
     }
 
+    @Test public void staleDigestRecoversUsingFreshMetadataAndBytesFromSameSource() throws Exception {
+        UpdateRelease offered = candidate("v0.7.7");
+        UpdateRelease fresh = UpdateRelease.fromMirrorManifest(manifest("v0.7.7").put("sha256",
+            "486ea46224d1bb4fb680f34f7c9ad96a8f24ec88be73ea8e5a6c65260e9cb8a7"), "0.7.6");
+        List<String> requests = new ArrayList<>();
+        List<Integer> progress = new ArrayList<>();
+        URL staleAsset = fake("https://mirror.example.com/app.apk", 200, "world", requests);
+        URL freshR2 = fake("https://mirror.example.com/app.apk?retry=1", 200, "stale", requests);
+        URL freshPages = fake("https://pages.example.com/app.apk?retry=1", 200, "world", requests);
+        File apk = File.createTempFile("update-test-", ".apk");
+        try {
+            offered.downloadRecovering(apk, progress::add, () -> offered.download(apk, progress::add, staleAsset),
+                new UpdateRelease.RetrySource(() -> fresh, freshR2),
+                new UpdateRelease.RetrySource(() -> fresh, freshPages));
+            assertEquals(List.of(staleAsset.toString(), freshR2.toString(), freshPages.toString()), requests);
+            assertEquals(List.of(0, 0), progress);
+            assertEquals("world", Files.readString(apk.toPath()));
+        } finally {
+            Files.deleteIfExists(apk.toPath());
+        }
+    }
+
+    @Test public void rejectsStillCorruptDownloadsAndNeverSwitchesTheOfferedVersion() throws Exception {
+        UpdateRelease offered = candidate("v0.7.7");
+        UpdateRelease newer = candidate("v0.7.8");
+        List<String> requests = new ArrayList<>();
+        URL invalid = fake("https://mirror.example.com/app.apk", 200, "partial", requests);
+        URL other = fake("https://mirror.example.com/other.apk", 200, "hello", requests);
+        File apk = File.createTempFile("update-test-", ".apk");
+        try {
+            UpdateRelease.InvalidApk rejected = assertThrows(UpdateRelease.InvalidApk.class,
+                () -> offered.downloadRecovering(apk, value -> {}, () -> offered.download(apk, value -> {}, invalid),
+                    new UpdateRelease.RetrySource(() -> newer, other),
+                    new UpdateRelease.RetrySource(() -> offered, invalid)));
+            assertEquals(UpdateRelease.Rejection.CONTENTS, rejected.reason);
+            assertEquals(List.of(invalid.toString(), invalid.toString()), requests);
+        } finally {
+            Files.deleteIfExists(apk.toPath());
+        }
+    }
+
+    @Test public void doesNotRetryIfThereWasNoIntegrityFailure() throws Exception {
+        UpdateRelease offered = candidate("v0.7.7");
+        File apk = File.createTempFile("update-test-", ".apk");
+        try {
+            UpdateRelease.RetrySource unused = new UpdateRelease.RetrySource(() -> {
+                throw new AssertionError("No fresh lookup should be attempted");
+            }, null);
+            assertThrows(IOException.class, () -> offered.downloadRecovering(apk, value -> {}, () -> {
+                throw new IOException("offline");
+            }, unused));
+            offered.downloadRecovering(apk, value -> {}, () -> {}, unused);
+        } finally {
+            Files.deleteIfExists(apk.toPath());
+        }
+    }
+
     private static void await(CountDownLatch latch) throws IOException {
         try {
             if (!latch.await(3, TimeUnit.SECONDS)) throw new IOException("wait expired");

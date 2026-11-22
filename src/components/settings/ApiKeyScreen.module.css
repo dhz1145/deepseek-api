@@ -29,7 +29,7 @@
 }
 
 .form input,
-.form select,
+.form .protocol,
 .form > button {
   box-sizing: border-box;
   min-width: 0;
@@ -39,14 +39,14 @@
 }
 
 .form input,
-.form select {
+.form .protocol {
   border: 1px solid var(--dsw-alias-border-l2);
   padding: 12px 16px;
   color: inherit;
   background: transparent;
 }
 
-.form > button {
+.form > button:not(.protocol) {
   border: 0;
   background: var(--dsw-alias-button-primary-fill);
   color: white;
@@ -65,4 +65,73 @@
 .error {
   font-size: 14px;
   color: var(--dsw-alias-state-error-primary);
+}
+
+.form[data-startup='waiting'] > * {
+  visibility: hidden;
+}
+
+.form[data-startup='playing'] > :not(.whale) {
+  animation: startup-form 580ms cubic-bezier(0.42, 0, 0.58, 1) both;
+}
+
+.form[data-startup='playing'] .whale {
+  animation: startup-whale 580ms cubic-bezier(0.42, 0, 0.58, 1) both;
+}
+
+.form[data-startup]::after {
+  content: 'DeepSeek API';
+  position: fixed;
+  z-index: 1;
+  left: 50%;
+  top: calc(45% + 23px);
+  transform: translateX(-50%);
+  color: var(--dsw-alias-brand-text);
+  font-size: 24px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.form[data-startup='playing']::after {
+  visibility: visible;
+  animation: startup-title 580ms ease-in-out both;
+}
+
+@keyframes startup-whale {
+  0%,
+  32% {
+    transform: translate(var(--startup-x), var(--startup-y));
+  }
+
+  0% {
+    opacity: 0;
+  }
+  32%,
+  100% {
+    opacity: 1;
+  }
+  100% {
+    transform: none;
+  }
+}
+
+@keyframes startup-title {
+  0%,
+  64%,
+  100% {
+    opacity: 0;
+  }
+  32% {
+    opacity: 1;
+  }
+}
+
+@keyframes startup-form {
+  0%,
+  68% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
 }

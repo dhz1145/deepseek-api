@@ -120,8 +120,8 @@ final class AppUpdater {
             File directory = apk.getParentFile();
             if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("No update cache");
             temporary = File.createTempFile("download-", ".apk", directory);
-            target.download(temporary, progress ->
-                post(() -> publish("downloading", target.version(), progress, null)));
+            target.downloadRecovering(temporary, progress ->
+                post(() -> publish("downloading", target.version(), progress, null)), installed.versionName);
             UpdateRelease.verifyApk(activity, installed, temporary, target.version());
             if (Thread.currentThread().isInterrupted() || !temporary.renameTo(apk)) {
                 throw new IOException("Could not stage APK");
@@ -133,7 +133,7 @@ final class AppUpdater {
                 if (resumed) install(true);
             });
         } catch (UpdateRelease.InvalidApk invalid) {
-            finishDownload("invalidApk", invalid);
+            finishDownload(invalid.reason.message, invalid);
         } catch (IOException | RuntimeException failure) {
             finishDownload("downloadFailed", failure);
         } finally {
@@ -142,7 +142,7 @@ final class AppUpdater {
     }
 
     private void finishDownload(String message, Exception failure) {
-        Log.w(TAG, "Update download failed: " + failure.getClass().getSimpleName());
+        Log.w(TAG, "Update download failed: " + message + " (" + failure.getClass().getSimpleName() + ")");
         post(() -> {
             busy = false;
             publish(message);
@@ -270,8 +270,8 @@ final class AppUpdater {
         try {
             JSONObject status = new JSONObject().put("phase", phase)
                 .put("version", version).put("progress", progress).put("offer", offer).put("automatic", automatic);
-            snapshot = status.toString();
-            notify.accept(status.put("message", message).toString());
+            snapshot = status.put("message", message).toString();
+            notify.accept(snapshot);
         } catch (JSONException impossible) {
             throw new IllegalStateException(impossible);
         }

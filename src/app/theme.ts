@@ -11,7 +11,9 @@ const subscribeOsTheme = (listener: () => void) => {
   return () => query.removeEventListener('change', listener)
 }
 
-const getOsTheme = (): Theme => (query.matches ? 'dark' : 'light')
+// Older Android WebViews may report a light color scheme even in system dark mode.
+const getOsTheme = (): Theme =>
+  (android?.systemDarkMode?.() ?? query.matches) ? 'dark' : 'light'
 
 const resolveTheme = (preference: ThemePreference, osTheme: Theme): Theme =>
   preference === 'system' ? osTheme : preference

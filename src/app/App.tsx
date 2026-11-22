@@ -131,6 +131,12 @@ export const App = () => {
   usePreventPageScroll(isMobile && !android)
 
   useEffect(() => {
+    if (apiKey) {
+      android?.consumeStartupAnimation?.()
+    }
+  }, [apiKey])
+
+  useEffect(() => {
     document.documentElement.lang = locale
   }, [locale])
 

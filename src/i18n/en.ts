@@ -72,7 +72,15 @@ export const en = {
   updateDownload: 'Download and install update',
   updateDownloading: 'Downloading update…',
   updateDownloadFailed: 'Download failed. Check your connection or storage and try again.',
-  updateInvalidApk: 'The update failed verification and was blocked.',
+  updateInvalidApk: 'Android could not read the update package. Installation was stopped.',
+  updateApkContents:
+    'The download is incomplete or does not match the release. Try again on another network.',
+  updateApkPackage: 'The update has a different app ID and cannot replace this installation.',
+  updateApkVersion:
+    'The update version does not match the release or is not newer than the installed version.',
+  updateApkAndroid: 'This update does not support your Android version.',
+  updateApkSignature:
+    'The update signature is missing, invalid, or does not match this installation.',
   updateInstall: 'Install downloaded update',
   updateApkMissing: 'The downloaded update was cleared. Download it again.',
   updatePermissionDenied: 'Allow this source to install apps, then try again.',

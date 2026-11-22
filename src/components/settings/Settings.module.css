@@ -248,8 +248,7 @@
     border-color: var(--dsw-alias-brand-primary);
   }
 
-  input,
-  select {
+  input {
     flex: 1;
     min-width: 0;
     height: 100%;
@@ -264,6 +263,11 @@
     &::placeholder {
       color: var(--dsw-alias-label-caption);
     }
+  }
+
+  button[aria-haspopup='dialog'] {
+    flex: 1;
+    height: 100%;
   }
 }
 

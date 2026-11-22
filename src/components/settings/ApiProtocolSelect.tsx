@@ -4,34 +4,35 @@ import {
   isChatApiFormat,
   type ChatApiFormat,
 } from '../../services/api/chatConfig.js'
+import { SettingsChoiceField } from './SettingsChoice.js'
+
+const protocols = Object.keys(CHAT_API_FORMATS)
+  .filter(isChatApiFormat)
+  .map((id) => ({
+    id,
+    label: CHAT_API_FORMATS[id],
+  }))
 
 export const ApiProtocolSelect = ({
   value,
   disabled,
   onChange,
+  className,
 }: {
   value: ChatApiFormat
   disabled: boolean
   onChange: (value: ChatApiFormat) => void
+  className?: string
 }) => {
   const t = useTranslate()
   return (
-    <select
-      aria-label={t('apiProtocol')}
+    <SettingsChoiceField
+      title={t('apiProtocol')}
       value={value}
+      fields={protocols}
       disabled={disabled}
-      onChange={(event) => {
-        const format = event.currentTarget.value
-        if (isChatApiFormat(format)) {
-          onChange(format)
-        }
-      }}
-    >
-      {Object.entries(CHAT_API_FORMATS).map(([format, name]) => (
-        <option key={format} value={format}>
-          {name}
-        </option>
-      ))}
-    </select>
+      confirm={onChange}
+      className={className}
+    />
   )
 }

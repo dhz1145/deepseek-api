@@ -3,6 +3,7 @@ import { useTranslate } from '../../i18n/index.js'
 import { listChatModels } from '../../services/api/client.js'
 import { setChatModel, updateChatModels, useSettings } from '../../services/settings.js'
 import styles from './ChatModelField.module.css'
+import { SettingsChoiceField } from './SettingsChoice.js'
 
 export const ChatModelField = () => {
   const t = useTranslate()
@@ -42,26 +43,16 @@ export const ChatModelField = () => {
   }
   return (
     <div className={styles.field}>
-      <label>
-        <span>{t('apiModel')}</span>
-        <select
-          value={model ?? ''}
-          disabled={!models?.length || status === 'loading'}
-          onChange={(event) => {
-            setChatModel(event.currentTarget.value)
-          }}
-        >
-          <option value="" disabled>
-            {t('apiModelChoose')}
-          </option>
-          {models === null && model ? <option value={model}>{model}</option> : null}
-          {models?.map((id) => (
-            <option key={id} value={id}>
-              {id}
-            </option>
-          ))}
-        </select>
-      </label>
+      <span>{t('apiModel')}</span>
+      <SettingsChoiceField
+        title={t('apiModel')}
+        value={model}
+        fields={models?.map((id) => ({ id, label: id })) ?? []}
+        fallback={t('apiModelChoose')}
+        disabled={!models?.length || status === 'loading'}
+        confirm={setChatModel}
+        className={styles.model}
+      />
       {status === 'loading' ? <div role="status">{t('apiModelLoading')}</div> : null}
       {status === 'error' ? <div role="alert">{t('apiModelLoadFailed')}</div> : null}
       {status === 'idle' && models?.length === 0 ? (
@@ -69,6 +60,7 @@ export const ChatModelField = () => {
       ) : null}
       <button
         type="button"
+        className={styles.refresh}
         disabled={status === 'loading'}
         onClick={() => setRefresh((value) => value + 1)}
       >

@@ -1,6 +1,7 @@
 package io.github.dhz1145.dsapi;
 
 import android.Manifest;
+import android.animation.ValueAnimator;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
@@ -54,6 +55,7 @@ public final class MainActivity extends Activity {
     private static final int EXPORT_HISTORY = 5;
     private WebView webView;
     private FrameLayout frame;
+    private volatile boolean startupAnimation;
     private ApiKeyStore keys;
     private NativeApiTransport apiTransport;
     private SharedPreferences profilePreferences;
@@ -110,13 +112,13 @@ public final class MainActivity extends Activity {
                     + "root.toggleAttribute('data-keyboard', " + ime + "); }", null);
             }
         });
+        startupAnimation = state == null && ValueAnimator.areAnimatorsEnabled();
         setContentView(frame);
         accessibility = getSystemService(AccessibilityManager.class);
         if (accessibility != null) {
             accessibility.addAccessibilityStateChangeListener(accessibilityState);
         }
-        setBars((getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
-            == Configuration.UI_MODE_NIGHT_YES);
+        setBars(isSystemDark());
         WebView.setWebContentsDebuggingEnabled(
             (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0);
         WebSettings settings = webView.getSettings();
@@ -152,7 +154,8 @@ public final class MainActivity extends Activity {
     }
 
     private void handleBack() {
-        webView.evaluateJavascript("window.dispatchEvent(new Event('android-back', {cancelable: true}))",
+        // Dispatch below window so the modal capture handler runs before page listeners on old WebViews.
+        webView.evaluateJavascript("document.dispatchEvent(new Event('android-back', {bubbles: true, cancelable: true}))",
             result -> { if ("true".equals(result)) finish(); });
     }
 
@@ -167,6 +170,11 @@ public final class MainActivity extends Activity {
         }
         webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('android-back-preview', {detail: "
             + detail + "}))", null);
+    }
+
+    private boolean isSystemDark() {
+        return (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
+            == Configuration.UI_MODE_NIGHT_YES;
     }
 
     private void setBars(boolean dark) {
@@ -548,6 +556,32 @@ public final class MainActivity extends Activity {
             else editor.putString(PROFILE_KEY, value);
             return editor.commit();
         }
+
+        @JavascriptInterface
+        public boolean consumeStartupAnimation() {
+            boolean animate = startupAnimation;
+            startupAnimation = false;
+            return animate;
+        }
+
+        @JavascriptInterface
+        public void onStartupFrameReady() {
+            runOnUiThread(() -> {
+                if (isDestroyed()) return;
+                // Start the shared logo only after the first React frame is ready to draw.
+                webView.postVisualStateCallback(0, new WebView.VisualStateCallback() {
+                    @Override
+                    public void onComplete(long requestId) {
+                        if (!isDestroyed()) {
+                            webView.evaluateJavascript("window.dispatchEvent(new Event('android-startup-frame'))", null);
+                        }
+                    }
+                });
+            });
+        }
+
+        @JavascriptInterface
+        public boolean systemDarkMode() { return isSystemDark(); }
 
         @JavascriptInterface
         public void setDarkBars(boolean dark) { runOnUiThread(() -> setBars(dark)); }

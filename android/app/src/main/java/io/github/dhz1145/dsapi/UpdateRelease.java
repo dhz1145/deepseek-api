@@ -80,8 +80,12 @@ record UpdateRelease(String version, URL url, URL assetApi, long size, String di
 
     private static UpdateRelease fromMirror(String base, String installedVersion, int connectMs, int readMs)
         throws IOException, JSONException {
-        return fromMirrorManifest(readJson(base + "latest.json", "application/json", connectMs, readMs, 4096),
-            installedVersion);
+        return fromMirrorEndpoint(base + "latest.json", installedVersion, connectMs, readMs);
+    }
+
+    private static UpdateRelease fromMirrorEndpoint(String manifest, String installedVersion, int connectMs, int readMs)
+        throws IOException, JSONException {
+        return fromMirrorManifest(readJson(manifest, "application/json", connectMs, readMs, 4096), installedVersion);
     }
 
     private record LookupResult(boolean github, UpdateRelease release, IOException failure) {}
@@ -221,6 +225,56 @@ record UpdateRelease(String version, URL url, URL assetApi, long size, String di
         return 0;
     }
 
+    void downloadRecovering(File file, IntConsumer progress, String installedVersion) throws IOException, InvalidApk {
+        // Give a stale edge separate URLs for both the manifest and the APK on retry only.
+        String retry = "?retry=" + System.currentTimeMillis();
+        String tag = "v" + version;
+        String name = apkName(tag);
+        RetrySource r2 = R2.isEmpty() ? null : new RetrySource(
+            () -> fromMirrorEndpoint(R2 + "latest.json" + retry, installedVersion, 1800, 2000), new URL(R2 + name + retry));
+        RetrySource pages = new RetrySource(
+            () -> fromMirrorEndpoint(PAGES + "latest.json" + retry, installedVersion, 3500, 4500), new URL(PAGES + name + retry));
+        RetrySource github = new RetrySource(
+            () -> fromGitHub(readJson(RELEASES_API + "/tags/" + tag + retry, "application/vnd.github+json",
+                5000, 6000, 512 * 1024), installedVersion), null);
+        downloadRecovering(file, progress, () -> download(file, progress), r2, pages, github);
+    }
+
+    @FunctionalInterface
+    interface DownloadAttempt {
+        void run() throws IOException, InvalidApk;
+    }
+
+    record RetrySource(Lookup lookup, URL mirrorAsset) {}
+
+    void downloadRecovering(File file, IntConsumer progress, DownloadAttempt attempt, RetrySource... sources)
+        throws IOException, InvalidApk {
+        try {
+            attempt.run();
+        } catch (InvalidApk rejected) {
+            if (rejected.reason != Rejection.CONTENTS) throw rejected;
+            for (RetrySource source : sources) {
+                if (Thread.currentThread().isInterrupted()) throw new IOException("Update interrupted");
+                if (source == null) continue;
+                try {
+                    UpdateRelease fresh = source.lookup().run();
+                    // Keep the user's consent bound to the version shown in the dialog.
+                    if (fresh == null || !version.equals(fresh.version())) continue;
+                    progress.accept(0);
+                    if (source.mirrorAsset() != null) {
+                        fresh.downloadFrom(source.mirrorAsset(), file, progress);
+                    } else {
+                        fresh.download(file, progress, fresh.assetApi(), fresh.url());
+                    }
+                    return;
+                } catch (IOException | JSONException | InvalidApk failure) {
+                    rejected.addSuppressed(failure);
+                }
+            }
+            throw rejected;
+        }
+    }
+
     void download(File file, IntConsumer progress) throws IOException, InvalidApk {
         String name = apkName("v" + version);
         URL pages = new URL(PAGES + name);
@@ -298,7 +352,7 @@ record UpdateRelease(String version, URL url, URL assetApi, long size, String di
             for (int count; (count = input.read(buffer)) != -1;) {
                 checkDeadline(deadline);
                 downloaded += count;
-                if (downloaded > size) throw new InvalidApk();
+                if (downloaded > size) throw new InvalidApk(Rejection.CONTENTS);
                 output.write(buffer, 0, count);
                 int percent = (int) (downloaded * 100 / size);
                 if (percent >= lastProgress + 5 && percent < 100) {
@@ -308,7 +362,7 @@ record UpdateRelease(String version, URL url, URL assetApi, long size, String di
             }
             byte[] actual = hash.digest();
             if (downloaded != size || !MessageDigest.isEqual(parseDigest(digest), actual)) {
-                throw new InvalidApk();
+                throw new InvalidApk(Rejection.CONTENTS);
             }
         }
     }
@@ -354,26 +408,41 @@ record UpdateRelease(String version, URL url, URL assetApi, long size, String di
         throws InvalidApk {
         PackageInfo apk = context.getPackageManager().getPackageArchiveInfo(file.getAbsolutePath(),
             PackageManager.GET_SIGNING_CERTIFICATES);
-        if (apk == null || !installed.packageName.equals(apk.packageName) || apk.versionName == null
-            || (version != null && !version.equals(apk.versionName))
-            || apk.getLongVersionCode() <= installed.getLongVersionCode()
-            || apk.applicationInfo == null || apk.applicationInfo.minSdkVersion > Build.VERSION.SDK_INT
-            || apk.signingInfo == null || installed.signingInfo == null) {
-            throw new InvalidApk();
+        if (apk == null || apk.applicationInfo == null) throw new InvalidApk(Rejection.ARCHIVE);
+        if (!installed.packageName.equals(apk.packageName)) throw new InvalidApk(Rejection.PACKAGE);
+        if (apk.versionName == null || (version != null && !version.equals(apk.versionName))
+            || apk.getLongVersionCode() <= installed.getLongVersionCode()) {
+            throw new InvalidApk(Rejection.VERSION);
         }
+        if (apk.applicationInfo.minSdkVersion > Build.VERSION.SDK_INT) throw new InvalidApk(Rejection.ANDROID);
+        if (apk.signingInfo == null || installed.signingInfo == null) throw new InvalidApk(Rejection.SIGNATURE);
         Signature[] existing = installed.signingInfo.getApkContentsSigners();
         Signature[] incoming = apk.signingInfo.getApkContentsSigners();
         if (existing == null || existing.length == 0 || incoming == null || incoming.length == 0) {
-            throw new InvalidApk();
+            throw new InvalidApk(Rejection.SIGNATURE);
         }
         boolean sameSigners = new HashSet<>(Arrays.asList(existing))
             .equals(new HashSet<>(Arrays.asList(incoming)));
         Signature[] history = apk.signingInfo.getSigningCertificateHistory();
         boolean rotated = existing.length == 1 && incoming.length == 1 && history != null
             && Arrays.asList(history).contains(existing[0]);
-        if (!sameSigners && !rotated) throw new InvalidApk();
+        if (!sameSigners && !rotated) throw new InvalidApk(Rejection.SIGNATURE);
         return apk.versionName;
     }
 
-    static final class InvalidApk extends Exception {}
+    enum Rejection {
+        CONTENTS("apkContents"), ARCHIVE("invalidApk"), PACKAGE("apkPackage"), VERSION("apkVersion"),
+        ANDROID("apkAndroid"), SIGNATURE("apkSignature");
+
+        final String message;
+        Rejection(String message) { this.message = message; }
+    }
+
+    static final class InvalidApk extends Exception {
+        final Rejection reason;
+        InvalidApk(Rejection reason) {
+            super(reason.name());
+            this.reason = reason;
+        }
+    }
 }

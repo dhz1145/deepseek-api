@@ -83,8 +83,8 @@ async function launch() {
       const id = ++nextId
       const timer = setTimeout(() => {
         pending.delete(id)
-        reject(new Error(`WebView debugger timed out on ${method}`))
-      }, 5000)
+        reject(new Error(`WebView debugger timed out on ${method}: ${params.expression?.slice(0, 120) ?? ""}`))
+      }, 12000)
       pending.set(id, (message) => {
         clearTimeout(timer)
         pending.delete(id)
@@ -121,6 +121,11 @@ async function launch() {
 
 const password = 'input[aria-label="DeepSeek API Key"][type=password]'
 const composer = '[data-drawer-open] textarea'
+const protocol = 'button[aria-label="API protocol"], button[aria-label="请求协议"]'
+const model = 'button[aria-label="Model"], button[aria-label="模型"]'
+const picker = `document.querySelector('[role="radiogroup"]')`
+const choice = (text) => `Array.from(${picker}.children).find((option) => option.textContent === ${JSON.stringify(text)})`
+const confirmChoice = `${picker}.parentElement.querySelector('button:not([role])').click()`
 const chatTitle = `Android compatibility test chat ${Date.now()}`
 const question = 'Android compatibility smoke test'
 const attachmentName = 'chat-demo-wide.png'
@@ -177,14 +182,35 @@ try {
       const key = document.querySelector(${JSON.stringify(password)});
       const address = key.previousElementSibling;
       const protocol = address?.previousElementSibling;
-      return protocol?.matches('select') && protocol.value === 'messages'
-        && Array.from(protocol.options).map(option => option.value).join(',') === 'messages,chat,responses'
+      return protocol?.matches('button[aria-haspopup="dialog"]')
+        && protocol.textContent.trim() === 'Anthropic Messages'
+        && !document.querySelector('select')
         && !!address && address.matches('input[inputmode="url"]') && address.value === ''
         && getComputedStyle(address).borderRadius === getComputedStyle(key).borderRadius;
     })()`),
     true,
     'The optional address field should appear above the key with the same input style'
   )
+  await evaluate(`document.querySelector(${JSON.stringify(protocol)}).click()`)
+  assert.deepEqual(
+    await evaluate(`Array.from(${picker}.children).map((button) => button.textContent)`),
+    ['Anthropic Messages', 'OpenAI Chat Completions', 'OpenAI Responses']
+  )
+  await evaluate(`${choice('OpenAI Responses')}.click()`)
+  assert.equal(await evaluate(`${choice('OpenAI Responses')}.getAttribute('aria-checked')`), 'true')
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(protocol)}).textContent`), 'Anthropic Messages')
+  adb('shell', 'input', 'keyevent', 'KEYCODE_BACK')
+  await until('Back should dismiss the protocol picker without leaving onboarding', () =>
+    evaluate(`!${picker} && document.querySelector(${JSON.stringify(protocol)})?.textContent === 'Anthropic Messages'`)
+  )
+  await evaluate(`document.querySelector(${JSON.stringify(protocol)}).click()`)
+  await evaluate(`${choice('OpenAI Chat Completions')}.click()`)
+  await evaluate(confirmChoice)
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(protocol)}).textContent`), 'OpenAI Chat Completions')
+  await evaluate(`document.querySelector(${JSON.stringify(protocol)}).click()`)
+  await evaluate(`${choice('Anthropic Messages')}.click()`)
+  await evaluate(confirmChoice)
+  console.log('PASS onboarding protocol uses the language-style picker, with confirm and cancel')
   const origin = webViewOrigin()
   const tap = ({ x, y }) => adb('shell', 'input', 'tap', String(x + origin.x), String(y + origin.y))
   await evaluate(`(() => {
@@ -293,16 +319,18 @@ try {
 
   await evaluate(setInput(password, 'android-compat-test'))
   await evaluate('document.querySelector("button[type=submit]").click()')
-  await until('The model list should contain the choices returned by the API', () =>
-    evaluate(`Array.from(document.querySelectorAll('select')).some((select) =>
-      Array.from(select.options).map((option) => option.value).join(',') === ',deepseek-flash,example-model')`)
+  await until('Dynamic models should enable the picker', () =>
+    evaluate(`document.querySelector(${JSON.stringify(model)})?.disabled === false`)
   )
-  await evaluate(`(() => {
-    const select = Array.from(document.querySelectorAll('select')).find((field) =>
-      Array.from(field.options).some((option) => option.value === 'example-model'));
-    select.value = 'example-model';
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-  })()`)
+  await evaluate(`document.querySelector(${JSON.stringify(model)}).click()`)
+  assert.deepEqual(
+    await evaluate(`Array.from(${picker}.children).map((button) => button.textContent)`),
+    ['deepseek-flash', 'example-model']
+  )
+  await evaluate(`${choice('example-model')}.click()`)
+  assert.equal(await evaluate(`!!${picker} && !document.querySelector(${JSON.stringify(composer)})`), true)
+  await evaluate(confirmChoice)
+  console.log('PASS dynamic model selection is applied only after confirmation')
   const chat = await until(
     'Saving the key should render a full-height, clickable conversation',
     async () => {
@@ -317,6 +345,42 @@ try {
     }
   )
   assert.equal(await evaluate('DeepSeekAndroid.readApiKey()'), 'android-compat-test')
+  await evaluate(openSidebar)
+  const settings = `document.querySelector('button[aria-label$=" · Settings"], button[aria-label$=" · 设置"]')`
+  await until('The sidebar should show the settings entry', () => evaluate(`!!${settings}`))
+  await evaluate(`${settings}.click()`)
+  const settingsRow = (page, re) => `Array.from(document.querySelectorAll('[data-settings-page="${page}"] button')).find((button) => ${re}.test(button.textContent.trim()))`
+  const language = settingsRow('root', '/^(Language|语言)/')
+  const account = settingsRow('root', '/^(Account management|账号管理)$/')
+  await until('Settings should show the language and account entries', () => evaluate(`!!${language} && !!${account}`))
+  await evaluate(`${language}.click()`)
+  assert.ok(await evaluate(`Array.from(${picker}.children).some((button) => button.textContent === 'English')`))
+  adb('shell', 'input', 'keyevent', 'KEYCODE_BACK')
+  await until('Back should close language without exiting settings', () => evaluate(`!${picker} && !!${account}`))
+  await evaluate(`${account}.click()`)
+  const keyRow = settingsRow('account', '/^DeepSeek API Key/')
+  await until('Account should show its key editor', () => evaluate(`!!${keyRow}`))
+  await evaluate(`${keyRow}.click()`)
+  await evaluate(`document.activeElement?.blur()`)
+  await until('Account key edit should expose the protocol and request address', () =>
+    evaluate(`!!document.querySelector(${JSON.stringify(protocol)}) && !!document.querySelector('input[inputmode="url"]')`)
+  )
+  await evaluate(`document.querySelector(${JSON.stringify(protocol)}).click()`)
+  await evaluate(`${choice('OpenAI Responses')}.click()`)
+  await until('Keyboard should close when the choice opens', () =>
+    evaluate(`!document.documentElement.hasAttribute('data-keyboard')`)
+  )
+  adb('shell', 'input', 'keyevent', 'KEYCODE_BACK')
+  await until('Back should dismiss the protocol picker, not the account editor', () =>
+    evaluate(`!${picker} && document.querySelector(${JSON.stringify(protocol)})?.textContent === 'Anthropic Messages'`)
+  )
+  const accountBack = `document.querySelector('[data-settings-page="account"] button[aria-label="Back"], [data-settings-page="account"] button[aria-label="返回"]')`
+  const rootBack = `document.querySelector('[data-settings-page="root"] button[aria-label="Back"], [data-settings-page="root"] button[aria-label="返回"]')`
+  await evaluate(`${accountBack}.click()`)
+  await until('Settings should return from the account screen', () => evaluate(`!document.querySelector('[data-settings-page="account"]')`))
+  await evaluate(`${rootBack}.click()`)
+  await until('The chat should return after closing settings', () => evaluate(layout(composer)).then((geometry) => geometry?.visible))
+  console.log('PASS language and account use the same picker; Back does not close the account editor')
   tap(chat)
   await until('The first keyboard opening should leave the composer visible', async () => {
     const geometry = await evaluate(layout(composer))
@@ -448,7 +512,7 @@ try {
   await evaluate(`${historyMenu}.click()`)
   await until('History menu should allow rename', () => menuChoice(['Rename', '重命名']))
   await until('Rename should open a dialog', () => evaluate(`!!document.querySelector('[role=dialog] input')`))
-  await evaluate(`window.dispatchEvent(new CustomEvent('android-back', { cancelable: true }))`)
+  await evaluate(`document.dispatchEvent(new Event('android-back', { bubbles: true, cancelable: true }))`)
   await until('Android back should close the rename dialog before the drawer', () =>
     evaluate(`!document.querySelector('[role=dialog] input') && !!document.querySelector('[data-drawer-open=true]')`)
   )
@@ -529,8 +593,12 @@ try {
   await until('The update dialog should display download progress', () =>
     webview.evaluate(`${updateDialog}?.querySelector('progress')?.value === 42`)
   )
+  await update({ phase: 'available', offer: 2, version: '99.0.0', message: 'apkSignature' })
+  await until('The update dialog should show the precise signature error', () =>
+    webview.evaluate(`/signature|签名/.test(${updateDialog}?.querySelector('[role="alert"]')?.textContent ?? '')`)
+  )
   assert.deepEqual(webview.exceptions, [])
-  console.log('PASS automatic update dialog, dismissal, new foreground offer and download progress')
+  console.log('PASS automatic update dialog, dismissal, download progress and precise verification error')
 } catch (error) {
   if (webview?.exceptions.length) console.error(webview.exceptions)
   throw error
