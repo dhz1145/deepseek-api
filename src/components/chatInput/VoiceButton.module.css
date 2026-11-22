@@ -40,6 +40,10 @@
     &:hover:not(.recording):not(.disabled) {
       background-color: var(--dsw-alias-interactive-bg-hover);
     }
+
+    [data-android]:not([data-android-hover]) &:hover:not(:active):not(.recording):not(.disabled) {
+      background-color: transparent;
+    }
   }
 
   &:focus-visible {

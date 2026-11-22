@@ -1,10 +1,16 @@
-import { memo, useEffect, useRef } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef } from 'react'
 import { android } from './android.js'
 import { AndroidUpdatePrompt } from './AndroidUpdatePrompt.js'
 import { useAndroidBackInterception } from './useAndroidBackInterception.js'
 import { useTranslate } from '../i18n/index.js'
 import { useSettings } from '../services/settings.js'
-import { useIsMobile, useMobileViewport, usePreventPageScroll } from './viewport.js'
+import {
+  isAndroidTablet,
+  useIsAndroidTablet,
+  useIsMobile,
+  useMobileViewport,
+  usePreventPageScroll,
+} from './viewport.js'
 import {
   bindChatPersistence,
   initChat,
@@ -28,7 +34,7 @@ import { Button } from '../components/base/Button.js'
 import { stopReadAloud } from '../services/speech/readAloud.js'
 import { setInert } from '../utils/inert.js'
 import { CollapsedSider } from '../components/sider/CollapsedSider.js'
-import { closeMobileSider, useMobileSider } from '../components/sider/mobileSiderState.js'
+import { closeMobileSider, openMobileSider, useMobileSider } from '../components/sider/mobileSiderState.js'
 import { MobileSider, Sider } from '../components/sider/Sider.js'
 import { useAndroidDrawerGesture } from '../components/sider/useAndroidDrawerGesture.js'
 import styles from './App.module.css'
@@ -103,7 +109,9 @@ export const App = () => {
   const apiKey = useSettings((state) => state.apiKey)
   const model = useSettings((state) => state.chatModel)
   const needsApiSetup = Boolean(android && (!apiKey || !model))
+  const tablet = useIsAndroidTablet()
   const drawerOpen = useMobileSider((state) => state.open)
+  const overlayOpen = drawerOpen && !tablet
   const mainRef = useRef<HTMLElement>(null)
   const locale = useSettings((state) => state.locale)
   const fontSize = useSettings((state) => state.fontSize)
@@ -115,16 +123,33 @@ export const App = () => {
   const frameRef = useMobileViewport(isMobile && !needsApiSetup)
   const drawerGesture = useAndroidDrawerGesture(
     frameRef,
-    Boolean(android && isMobile && !needsApiSetup)
+    Boolean(android && isMobile && !tablet && !needsApiSetup)
   )
   const activeId = useChatStore((state) => state.activeId)
 
-  useAndroidBackInterception(drawerOpen)
+  useAndroidBackInterception(overlayOpen)
   usePreventPageScroll(isMobile && !android)
 
   useEffect(() => {
     document.documentElement.lang = locale
   }, [locale])
+
+  useEffect(() => {
+    if (!android) {
+      return
+    }
+    const root = document.documentElement
+    const trackPointer = (event: PointerEvent) => {
+      root.toggleAttribute('data-android-hover', event.pointerType === 'mouse')
+    }
+    window.addEventListener('pointermove', trackPointer, { passive: true })
+    window.addEventListener('pointerdown', trackPointer, { passive: true })
+    return () => {
+      window.removeEventListener('pointermove', trackPointer)
+      window.removeEventListener('pointerdown', trackPointer)
+      root.removeAttribute('data-android-hover')
+    }
+  }, [])
 
   useEffect(() => {
     if (android) {
@@ -134,8 +159,8 @@ export const App = () => {
   }, [fontSize])
 
   useEffect(() => {
-    setInert(mainRef.current, Boolean(android && isMobile && drawerOpen))
-  }, [drawerOpen, isMobile, needsApiSetup])
+    setInert(mainRef.current, Boolean(android && overlayOpen))
+  }, [overlayOpen, needsApiSetup])
 
   // 文件数、存储空间达到上限时，附件上只显示「上传失败」，原因用 toast 说明
   useEffect(() => onUploadNotice(showToast), [])
@@ -145,12 +170,14 @@ export const App = () => {
   useEffect(closeSearchPanel, [activeId])
   // 切换会话时停止朗读
   useEffect(stopReadAloud, [activeId])
-  // 移动端切换布局后收起抽屉；会话行点击负责在按压反馈后关闭
-  useEffect(() => {
-    if (isMobile) {
+  // 随窗口布局切换初始状态；不重建聊天或更改会话。
+  useLayoutEffect(() => {
+    if (tablet) {
+      openMobileSider()
+    } else {
       closeMobileSider()
     }
-  }, [isMobile])
+  }, [isMobile, tablet])
 
   useEffect(() => {
     void initChat()
@@ -172,7 +199,7 @@ export const App = () => {
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
       } else if (useSearchPanel.getState().entry) {
         closeSearchPanel()
-      } else if (useMobileSider.getState().open) {
+      } else if (!isAndroidTablet() && useMobileSider.getState().open) {
         closeMobileSider()
       } else {
         return
@@ -197,10 +224,11 @@ export const App = () => {
       <div
         ref={frameRef}
         className={styles.frame}
-        data-drawer-open={drawerOpen}
-        {...(android && isMobile ? drawerGesture : {})}
+        data-drawer-layout={tablet ? 'split' : undefined}
+        data-drawer-open={overlayOpen}
+        {...(android && !tablet ? drawerGesture : {})}
       >
-        {isMobile ? <MobileSider /> : siderCollapsed ? null : <Sider />}
+        {isMobile ? <MobileSider split={tablet} /> : siderCollapsed ? null : <Sider />}
         <main ref={mainRef} className={styles.main}>
           {saveError ? (
             <div className={styles.saveError} role="alert">

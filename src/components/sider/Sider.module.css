@@ -383,3 +383,23 @@
     font-size: 16px;
   }
 }
+
+[data-android] [data-drawer-layout='split'] .drawer {
+  position: relative;
+  top: auto;
+  bottom: auto;
+  left: auto;
+  flex: 0 0 auto;
+  width: 36%;
+  max-width: 320px;
+  padding-bottom: var(--android-button-nav-inset, 0px);
+  border-right: 1px solid var(--dsw-alias-border-l2);
+  transform: none;
+  will-change: auto;
+  transition: none;
+}
+
+[data-drawer-layout='split'] .drawer[hidden],
+[data-drawer-layout='split'] .drawer::after {
+  display: none;
+}

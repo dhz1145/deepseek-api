@@ -168,3 +168,20 @@
     height: var(--app-viewport-height, var(--app-default-viewport-height));
   }
 }
+
+[data-android] .frame {
+  bottom: auto;
+  top: var(--app-viewport-top, 0px);
+  height: var(--app-viewport-height, var(--app-default-viewport-height));
+}
+
+[data-android] .frame[data-drawer-layout='split'] {
+  --message-list-max-width: 768px;
+  --message-list-padding-horizontal: 20px;
+}
+
+[data-android] .frame[data-drawer-layout='split']::before,
+[data-android] .frame[data-drawer-layout='split']::after,
+[data-android] .frame[data-drawer-layout='split'] .main::after {
+  display: none;
+}

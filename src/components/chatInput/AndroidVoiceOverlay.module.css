@@ -59,7 +59,7 @@
     rgb(103 162 255 / 94%) 100%
   );
   --voice-diffusion: radial-gradient(
-    ellipse 52% 54% at 50% 65%,
+    ellipse 52% 54% at var(--voice-x, 50%) var(--voice-y, 65%),
     rgb(102 163 254 / 92%) 5%,
     rgb(102 163 254 / 79%) 24%,
     rgb(102 163 254 / 59%) 44%,
@@ -81,7 +81,7 @@
     rgb(255 171 171 / 94%) 100%
   );
   --voice-diffusion: radial-gradient(
-    ellipse 53% 50% at 50% 66%,
+    ellipse 53% 50% at var(--voice-x, 50%) var(--voice-y, 66%),
     rgb(255 163 164 / 38%) 18%,
     rgb(255 163 164 / 27%) 47%,
     rgb(255 163 164 / 10%) 72%,

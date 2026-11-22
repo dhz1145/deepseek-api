@@ -13,7 +13,7 @@ import { renameSession, selectSession } from '../../services/chat/store.js'
 import type { SessionSummary } from '../../services/chat/types.js'
 import { IconButton } from '../base/IconButton.js'
 import { Menu } from '../base/Menu.js'
-import { closeMobileSider } from './mobileSiderState.js'
+import { closeOverlaySider } from './mobileSiderState.js'
 import { SessionActionDialog } from './SessionActionDialog.js'
 import styles from './SessionItem.module.css'
 
@@ -45,13 +45,13 @@ export const SessionItem = memo(function SessionItem({
   const openSession = () => {
     selectSession(session.id)
     if (!android) {
-      closeMobileSider()
+      closeOverlaySider()
       return
     }
     window.clearTimeout(closeTimerRef.current)
     window.clearTimeout(highlightTimerRef.current)
     setTapHighlight(true)
-    closeTimerRef.current = window.setTimeout(closeMobileSider, 170)
+    closeTimerRef.current = window.setTimeout(closeOverlaySider, 170)
     highlightTimerRef.current = window.setTimeout(() => setTapHighlight(false), 350)
   }
 

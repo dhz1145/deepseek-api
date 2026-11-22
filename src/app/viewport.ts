@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react'
 
-/** 窄于 768px 按移动端布局 */
+import { android } from './android.js'
+
+/** 浏览器窄于 768px 时使用移动布局；Android 始终保留自己的控件。 */
 const query = window.matchMedia('not all and (min-width: 768px)')
 
 const subscribe = (onChange: () => void) => {
@@ -8,7 +10,15 @@ const subscribe = (onChange: () => void) => {
   return () => query.removeEventListener('change', onChange)
 }
 
-export const useIsMobile = () => useSyncExternalStore(subscribe, () => query.matches)
+export const useIsMobile = () => useSyncExternalStore(subscribe, () => Boolean(android) || query.matches)
+
+const tabletQuery = window.matchMedia('(min-width: 840px)')
+const subscribeTablet = (onChange: () => void) => {
+  tabletQuery.addEventListener('change', onChange)
+  return () => tabletQuery.removeEventListener('change', onChange)
+}
+export const isAndroidTablet = () => Boolean(android && tabletQuery.matches)
+export const useIsAndroidTablet = () => useSyncExternalStore(subscribeTablet, isAndroidTablet)
 
 const preventPageScroll = (event: TouchEvent) => {
   if (event.touches.length !== 1) {

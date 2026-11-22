@@ -2,12 +2,14 @@ import { useEffect, useRef, useState, type PointerEvent } from 'react'
 import type { useVoiceInput } from './useVoiceInput.js'
 
 type Hold = { pointer: number; startY: number; active: boolean; canceling: boolean }
+export type VoiceTouch = { x: number; y: number }
 
 export const useHoldToTalk = (
   voice: ReturnType<typeof useVoiceInput>,
   beforeStart: () => boolean
 ) => {
   const gesture = useRef<Hold | null>(null)
+  const touch = useRef<VoiceTouch | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const [canceling, setCanceling] = useState(false)
   useEffect(() => () => clearTimeout(timer.current), [])
@@ -24,6 +26,7 @@ export const useHoldToTalk = (
       canceling: false,
     }
     gesture.current = held
+    touch.current = { x: event.clientX, y: event.clientY }
     element.setPointerCapture(held.pointer)
     const start = () => {
       if (gesture.current === held && beforeStart()) {
@@ -46,6 +49,7 @@ export const useHoldToTalk = (
     }
     clearTimeout(timer.current)
     gesture.current = null
+    touch.current = null
     if (held.active) {
       event.preventDefault()
       if (interrupted || held.canceling) {
@@ -62,6 +66,7 @@ export const useHoldToTalk = (
       if (held?.pointer !== event.pointerId) {
         return
       }
+      touch.current = { x: event.clientX, y: event.clientY }
       if (held.active) {
         held.canceling = held.startY - event.clientY >= 72
         setCanceling(held.canceling)
@@ -75,6 +80,7 @@ export const useHoldToTalk = (
   }
   return {
     canceling,
+    touch,
     direct: { ...events, onPointerDown: (event: PointerEvent<HTMLElement>) => begin(event, 0) },
     delayed: { ...events, onPointerDown: (event: PointerEvent<HTMLElement>) => begin(event, 380) },
   }

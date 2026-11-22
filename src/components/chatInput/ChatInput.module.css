@@ -309,6 +309,10 @@
     background-color: var(--dsw-alias-interactive-bg-hover);
   }
 
+  [data-android]:not([data-android-hover]) &:hover:not(:active):not(:disabled) {
+    background-color: transparent;
+  }
+
   &:disabled {
     opacity: 0.4;
     cursor: not-allowed;
@@ -321,6 +325,10 @@
 
     &:hover {
       background-color: var(--dsw-alias-button-ghost-active-hover);
+    }
+
+    [data-android]:not([data-android-hover]) &:hover:not(:active) {
+      background-color: var(--dsw-alias-button-ghost-active-fill);
     }
   }
 }

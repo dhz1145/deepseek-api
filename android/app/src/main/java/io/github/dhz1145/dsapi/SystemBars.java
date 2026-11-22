@@ -8,15 +8,29 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.view.WindowManager;
 
 final class SystemBars {
     interface InsetsListener {
         void update(Insets safe, boolean keyboardVisible, int buttonNavigationBottom);
     }
 
-    @SuppressWarnings("deprecation") // Android 10 reports the keyboard in the system window insets.
+    @SuppressWarnings("deprecation") // Android 10-14 require explicit edge-to-edge and transparent bars.
     static void applyInsets(Window window, View content, InsetsListener listener) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS
+                | WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
+            window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+            window.setStatusBarColor(Color.TRANSPARENT);
+            window.setNavigationBarColor(Color.TRANSPARENT);
+        }
+        window.setStatusBarContrastEnforced(false);
+        window.setNavigationBarContrastEnforced(false);
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                window.setDecorFitsSystemWindows(false);
+            }
             content.setOnApplyWindowInsetsListener((view, insets) -> {
                 Insets safe = insets.getInsets(WindowInsets.Type.systemBars()
                     | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime());
@@ -31,8 +45,6 @@ final class SystemBars {
         View decor = window.getDecorView();
         decor.setSystemUiVisibility(decor.getSystemUiVisibility() | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
             | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
-        window.setStatusBarColor(Color.TRANSPARENT);
-        window.setNavigationBarColor(Color.TRANSPARENT);
         content.setOnApplyWindowInsetsListener((view, insets) -> {
             Insets safe = insets.getSystemWindowInsets();
             WindowInsets rootInsets = view.getRootWindowInsets();
@@ -56,15 +68,19 @@ final class SystemBars {
     @SuppressWarnings("deprecation") // Android 10 controls icon colors through system UI flags.
     static void setAppearance(Window window, boolean dark) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            int flags = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-                | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
-            window.getInsetsController().setSystemBarsAppearance(dark ? 0 : flags, flags);
+            WindowInsetsController controller = window.getInsetsController();
+            if (controller != null) {
+                int flags = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                    | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                controller.setSystemBarsAppearance(dark ? 0 : flags, flags);
+            }
         } else {
             View decor = window.getDecorView();
             int flags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
             int visibility = decor.getSystemUiVisibility();
             decor.setSystemUiVisibility(dark ? visibility & ~flags : visibility | flags);
         }
+        window.setStatusBarContrastEnforced(false);
         window.setNavigationBarContrastEnforced(false);
     }
 
@@ -72,6 +88,7 @@ final class SystemBars {
     static void setFullscreen(Window window, boolean fullscreen) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             WindowInsetsController controller = window.getInsetsController();
+            if (controller == null) return;
             if (fullscreen) {
                 controller.setSystemBarsBehavior(
                     WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);

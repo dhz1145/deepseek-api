@@ -489,3 +489,14 @@ a.row:active,
     transform: translateY(100%);
   }
 }
+
+@media (min-width: 840px) {
+  .header,
+  .scroll > * {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 768px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+}

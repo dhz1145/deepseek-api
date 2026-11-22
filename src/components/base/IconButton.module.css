@@ -20,6 +20,11 @@
     &:hover:not(:disabled) {
       background-color: var(--dsw-alias-interactive-bg-hover);
     }
+
+    /* 平板触控/手写笔常满足 hover: hover，点击后避免残留悬停底色；接鼠标移动时仍恢复悬停态 */
+    [data-android]:not([data-android-hover]) &:hover:not(:active):not(:disabled) {
+      background-color: transparent;
+    }
   }
 
   &:focus-visible {

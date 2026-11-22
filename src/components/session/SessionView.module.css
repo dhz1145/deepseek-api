@@ -100,3 +100,11 @@
     padding-bottom: env(safe-area-inset-bottom);
   }
 }
+
+@media (min-width: 768px) {
+  [data-android] .inputContainer {
+    position: relative;
+    flex-shrink: 0;
+    margin: 0 auto;
+  }
+}

@@ -19,7 +19,7 @@ import { IconButton } from '../base/IconButton.js'
 import { showToast } from '../base/toastState.js'
 import { ProfileAvatar } from '../settings/ProfileAvatar.js'
 import { openSettings } from '../settings/settingsDialogState.js'
-import { closeMobileSider, useMobileSider } from './mobileSiderState.js'
+import { closeMobileSider, closeOverlaySider, useMobileSider } from './mobileSiderState.js'
 import { SessionActionDialog } from './SessionActionDialog.js'
 import { SessionItem } from './SessionItem.js'
 import { useSessionSearch } from './useSessionSearch.js'
@@ -188,7 +188,7 @@ export const Sider = memo(function Sider({ mobile = false }: { mobile?: boolean 
             className={styles.newChat}
             onClick={() => {
               newChat()
-              closeMobileSider()
+              closeOverlaySider()
             }}
           >
             <span className={styles.newChatIcon}>
@@ -387,8 +387,7 @@ export const Sider = memo(function Sider({ mobile = false }: { mobile?: boolean 
   )
 })
 
-/** 移动端抽屉：浮在页面上方，点空白区域关闭。 */
-export const MobileSider = memo(function MobileSider() {
+export const MobileSider = memo(function MobileSider({ split }: { split: boolean }) {
   const t = useTranslate()
   const open = useMobileSider((state) => state.open)
   const drawer = useRef<HTMLDivElement>(null)
@@ -400,7 +399,7 @@ export const MobileSider = memo(function MobileSider() {
   }
   return (
     <>
-      {open ? (
+      {open && !split ? (
         <div
           className={styles.drawerMask}
           role="button"
@@ -408,7 +407,12 @@ export const MobileSider = memo(function MobileSider() {
           onClick={closeMobileSider}
         />
       ) : null}
-      <div className={styles.drawer} ref={drawer} data-android-drawer={android ? '' : undefined}>
+      <div
+        className={styles.drawer}
+        ref={drawer}
+        hidden={split && !open}
+        data-android-drawer={android ? '' : undefined}
+      >
         <Sider mobile />
       </div>
     </>

@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type RefObject } from 'react'
+import type { VoiceTouch } from './useHoldToTalk.js'
 import { useTranslate } from '../../i18n/index.js'
 import styles from './AndroidVoiceOverlay.module.css'
 
@@ -8,23 +9,35 @@ export const AndroidVoiceOverlay = ({
   active,
   canceling,
   level,
+  touch,
 }: {
   active: boolean
   canceling: boolean
   level: () => number
+  touch: RefObject<VoiceTouch | null>
 }) => {
   const t = useTranslate()
+  const overlay = useRef<HTMLDivElement>(null)
   const waveform = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (!active || !waveform.current) {
+    const panel = overlay.current
+    if (!active || !waveform.current || !panel) {
       return
     }
     const elements = Array.from(waveform.current.children) as HTMLElement[]
     const samples = new Float32Array(elements.length / 2)
     let lastSample = 0
     let frame = 0
+    let lastTouch: VoiceTouch | null = null
     const draw = (now: number) => {
+      const point = touch.current
+      if (point && point !== lastTouch) {
+        lastTouch = point
+        const top = panel.getBoundingClientRect().top
+        panel.style.setProperty('--voice-x', `${point.x}px`)
+        panel.style.setProperty('--voice-y', `${point.y - top}px`)
+      }
       if (now - lastSample >= 26) {
         lastSample = now
         samples.copyWithin(1, 0, -1)
@@ -39,10 +52,11 @@ export const AndroidVoiceOverlay = ({
     }
     frame = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(frame)
-  }, [active, level])
+  }, [active, level, touch])
 
   return (
     <div
+      ref={overlay}
       className={styles.overlay}
       data-recording={active}
       data-canceling={canceling}

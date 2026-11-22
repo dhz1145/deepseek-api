@@ -171,7 +171,7 @@ public final class MainActivity extends Activity {
 
     private void setBars(boolean dark) {
         SystemBars.setAppearance(getWindow(), dark);
-        int color = Color.parseColor(dark ? "#191919" : "#FFFFFF");
+        int color = Color.parseColor(dark ? "#151517" : "#FFFFFF");
         frame.setBackgroundColor(color);
         webView.setBackgroundColor(color);
     }
@@ -428,6 +428,14 @@ public final class MainActivity extends Activity {
             } else {
                 completeFileChooser(files);
             }
+        }
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        if (frame != null) {
+            frame.requestApplyInsets();
         }
     }
 

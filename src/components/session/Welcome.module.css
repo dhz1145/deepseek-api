@@ -90,3 +90,12 @@
     user-select: none;
   }
 }
+
+@media (min-width: 768px) {
+  [data-android] .welcome {
+    flex: 1;
+    min-height: 0;
+    justify-content: flex-end;
+    margin: 0 auto;
+  }
+}

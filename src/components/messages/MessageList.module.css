@@ -108,3 +108,24 @@
     transition: none;
   }
 }
+
+@media (min-width: 768px) {
+  [data-android] .container {
+    overflow: hidden;
+    scrollbar-gutter: auto;
+  }
+
+  [data-android] .scrollArea,
+  [data-android] .scroll {
+    position: relative;
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  [data-android] .scroll {
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+  }
+}

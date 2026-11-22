@@ -705,6 +705,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
             active={voiceOverlayActive}
             canceling={hold.canceling}
             level={voice.getLevel}
+            touch={hold.touch}
           />
         </>
       ) : null}

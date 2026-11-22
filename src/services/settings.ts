@@ -74,7 +74,9 @@ const write = (key: string, value: string | null) => {
       localStorage.setItem(key, value)
     }
     const previousKey = legacyKey(key)
-    if (previousKey) localStorage.removeItem(previousKey)
+    if (previousKey) {
+      localStorage.removeItem(previousKey)
+    }
     return true
   } catch {
     return false
@@ -85,9 +87,13 @@ const read = (key: string) => {
   try {
     const value = localStorage.getItem(key)
     const previousKey = value === null ? legacyKey(key) : null
-    if (!previousKey) return value
+    if (!previousKey) {
+      return value
+    }
     const previous = localStorage.getItem(previousKey)
-    if (previous !== null) write(key, previous)
+    if (previous !== null) {
+      write(key, previous)
+    }
     return previous
   } catch {
     return null

@@ -21,6 +21,10 @@
       background-color: var(--dsw-specific-sidebar-nav-item-hover);
     }
 
+    [data-android]:not([data-android-hover]) &:not(.active):hover:not(:active) {
+      background-color: transparent;
+    }
+
     &:hover,
     &.active {
       .action {
@@ -54,7 +58,9 @@
 }
 
 [data-android] .item {
-  content-visibility: auto;
+  --session-press: rgb(227 233 246);
+  --session-tap: rgb(237 241 254);
+  contain: layout style;
   padding-left: 7px;
   padding-right: 4px;
   height: 48px;
@@ -89,7 +95,7 @@
   }
 
   &:active {
-    background: rgb(227 233 246);
+    background-color: var(--session-press);
   }
 
   &.tapHighlight {
@@ -97,17 +103,22 @@
   }
 }
 
+[data-android] [data-ds-dark-theme] .item {
+  --session-press: var(--dsw-alias-button-ghost-active-hover);
+  --session-tap: var(--dsw-alias-button-ghost-active-fill);
+}
+
 @keyframes androidSessionTapHighlight {
   0%,
   30% {
     color: var(--dsw-alias-brand-text);
-    background-color: rgb(237 241 254);
+    background-color: var(--session-tap);
   }
 
   30.1%,
   100% {
-    color: rgb(60 104 248);
-    background-color: rgb(227 233 246);
+    color: var(--dsw-alias-brand-text);
+    background-color: var(--session-press);
   }
 }
 
