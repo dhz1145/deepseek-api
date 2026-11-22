@@ -22,7 +22,7 @@ import org.json.JSONObject;
 final class AppUpdater {
     private static final String TAG = "AppUpdater";
     static final int INSTALL_SOURCE_SETTINGS = 6;
-    private static final int SYSTEM_INSTALLER = 7;
+    private static final int INSTALLER = 7;
 
     private final Activity activity;
     private final PackageInfo installed;
@@ -191,7 +191,10 @@ final class AppUpdater {
             }
             return;
         }
-        if (!launchInstaller(Intent.ACTION_VIEW) && !launchInstaller(Intent.ACTION_INSTALL_PACKAGE)) {
+        // Let Android resolve the user's default installer before trying OEM fallbacks.
+        if (!startInstaller(installerIntent(Intent.ACTION_VIEW))
+            && !launchSystemInstaller(Intent.ACTION_VIEW)
+            && !launchSystemInstaller(Intent.ACTION_INSTALL_PACKAGE)) {
             publish("installerUnavailable");
         }
     }
@@ -208,12 +211,29 @@ final class AppUpdater {
         }
     }
 
-    private boolean launchInstaller(String action) {
+    private Intent installerIntent(String action) {
         Uri uri = UpdateApkProvider.uri(activity);
         Intent intent = new Intent(action)
             .setDataAndType(uri, UpdateApkProvider.MIME_TYPE)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         intent.setClipData(ClipData.newRawUri("APK", uri));
+        return intent;
+    }
+
+    @SuppressWarnings("deprecation")
+    private boolean startInstaller(Intent intent) {
+        try {
+            // Preserve the calling package on installers that obtain it from the activity result.
+            activity.startActivityForResult(intent, INSTALLER);
+            returningFromInstaller = true;
+            return true;
+        } catch (ActivityNotFoundException | SecurityException failure) {
+            return false;
+        }
+    }
+
+    private boolean launchSystemInstaller(String action) {
+        Intent intent = installerIntent(action);
         int flags = PackageManager.MATCH_DEFAULT_ONLY | PackageManager.MATCH_SYSTEM_ONLY
             | PackageManager.GET_RESOLVED_FILTER;
         for (ResolveInfo handler : activity.getPackageManager().queryIntentActivities(intent, flags)) {
@@ -230,14 +250,7 @@ final class AppUpdater {
             }
             Intent explicit = new Intent(intent).setClassName(handler.activityInfo.packageName,
                 handler.activityInfo.name);
-            try {
-                // Preserve the calling package on installers that obtain it from the activity result.
-                activity.startActivityForResult(explicit, SYSTEM_INSTALLER);
-                returningFromInstaller = true;
-                return true;
-            } catch (ActivityNotFoundException | SecurityException failure) {
-                // Some ROMs expose several installer activities with different access rules.
-            }
+            if (startInstaller(explicit)) return true;
         }
         return false;
     }

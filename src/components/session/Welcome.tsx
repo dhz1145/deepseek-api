@@ -14,7 +14,7 @@ import styles from './Welcome.module.css'
 let coldStartGreetingPending = true
 
 /** 新对话：问候语 + 输入框。桌面端居中；移动端输入框吸底 */
-export const Welcome = () => {
+export const Welcome = ({ startup = false }: { startup?: boolean }) => {
   const t = useTranslate()
   const isMobile = useIsMobile()
   const coldStartGreeting = useAndroidColdStartGreeting()
@@ -32,11 +32,15 @@ export const Welcome = () => {
     }
   }, [])
   return (
-    <div className={styles.container} data-drawer-free-pan={android ? '' : undefined}>
+    <div
+      className={styles.container}
+      data-drawer-free-pan={android ? '' : undefined}
+      data-chat-startup={startup ? '' : undefined}
+    >
       {isMobile ? <MobileHeader /> : null}
       <div className={styles.welcome}>
         <div className={styles.greeting}>
-          {android ? <img src={whale} alt="" /> : null}
+          {android ? <img src={whale} width={42} height={42} alt="" /> : null}
           {greeting}
         </div>
         <ChatInput sessionId={null} />

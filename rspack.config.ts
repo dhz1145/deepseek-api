@@ -90,7 +90,14 @@ export const createConfig = ({
         type: 'javascript/auto',
       },
       { test: /\.(woff2?|ttf)$/, type: 'asset/resource' },
-      { test: /\.svg$/, type: 'asset/resource' },
+      {
+        test: /\.svg$/,
+        oneOf: [
+          // The startup whale must paint with the greeting, without a separate asset request.
+          { test: /deepseek-whale\.svg$/, type: 'asset/inline' },
+          { type: 'asset/resource' },
+        ],
+      },
     ],
   },
   plugins: [

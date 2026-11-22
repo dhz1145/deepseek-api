@@ -60,6 +60,28 @@
   }
 }
 
+@media (prefers-reduced-motion: no-preference) {
+  .container[data-chat-startup] > :not(.welcome),
+  .container[data-chat-startup] .greeting {
+    animation: reveal-welcome 180ms ease-out both;
+  }
+
+  /* ChatInput's root follows the greeting; leave layout and hit targets unchanged. */
+  .container[data-chat-startup] .greeting + * {
+    animation: reveal-welcome 180ms ease-out 65ms both;
+  }
+}
+
+@keyframes reveal-welcome {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
 @media not all and (min-width: 768px) {
   .container {
     flex-direction: column;

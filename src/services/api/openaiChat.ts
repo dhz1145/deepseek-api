@@ -1,4 +1,4 @@
-import type { ChatApiFormat } from './chatConfig.js'
+import { DEEP_THINK_EFFORT, type ChatApiFormat } from './chatConfig.js'
 import type {
   CreateMessageRequest,
   MessageParam,
@@ -66,12 +66,17 @@ export const openAIRequest = (
         }
       : {}),
   }
+  const thinkingEnabled = body.thinking.type === 'enabled'
   if (format === 'chat') {
     return {
       ...common,
       messages: body.system ? [{ role: 'system', content: body.system }, ...messages] : messages,
       ...(deepSeek
-        ? { max_tokens: body.max_tokens, thinking: body.thinking }
+        ? {
+            max_tokens: body.max_tokens,
+            thinking: body.thinking,
+            reasoning_effort: thinkingEnabled ? DEEP_THINK_EFFORT : undefined,
+          }
         : { max_completion_tokens: body.max_tokens }),
     }
   }
@@ -81,7 +86,7 @@ export const openAIRequest = (
     instructions: body.system || undefined,
     max_output_tokens: body.max_tokens,
     reasoning: deepSeek
-      ? { effort: body.thinking.type === 'enabled' ? 'high' : 'none' }
+      ? { effort: thinkingEnabled ? DEEP_THINK_EFFORT : 'none' }
       : undefined,
     store: false,
   }

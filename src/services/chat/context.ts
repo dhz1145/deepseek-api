@@ -1,6 +1,7 @@
 import { throwIfAborted } from '../../utils/abort.js'
 import { isContextOverflow } from '../api/errors.js'
 import { getContextRounds, getReplyText } from './reply.js'
+import { estimateTextTokens } from './tokenEstimator.js'
 import type {
   AssistantMessage,
   ContextCheckpoint,
@@ -9,27 +10,44 @@ import type {
   UserMessage,
 } from './types.js'
 
-const WINDOW_TOKENS = 1_048_576
-const HEADROOM_TOKENS = 65_536
+export { estimateTextTokens }
+
+export const WINDOW_TOKENS = 1_048_576
+/** 参考 Codex CLI：有效窗口留 5% 缓冲，自动压缩在 90% 触发。 */
+const EFFECTIVE_WINDOW_RATIO = 0.95
+const AUTO_COMPACT_RATIO = 0.9
+const RECENT_RETENTION_RATIO = 0.16
+const FIXED_PROMPT_OVERHEAD = 256
+const MIN_CALIBRATION_TOKENS = 2_000
+const MIN_CALIBRATION_SCALE = 0.5
+const MAX_CALIBRATION_SCALE = 2
 export const SUMMARY_OUTPUT_TOKENS = 4_096
 const SUMMARY_BATCH_TOKENS = 96 * 1024
 const CHECKPOINT_LIMIT = 16
 
-export const contextBudget = (outputTokens: number, window = WINDOW_TOKENS) => ({
-  input: Math.min(
-    Math.floor(window * 0.8),
-    window - outputTokens - Math.min(HEADROOM_TOKENS, window / 8)
-  ),
-  recent: Math.floor((window - outputTokens) * 0.16),
-})
-
-/** 文件和阅读链接会在服务端展开。这里只估算，实际超限由 API 响应兜底。 */
-export const estimateTextTokens = (text: string): number => {
-  let nonAscii = 0
-  for (let index = 0; index < text.length; index++) {
-    nonAscii += Number(text.charCodeAt(index) > 127)
+export const contextBudget = (outputReserve: number, window = WINDOW_TOKENS) => {
+  const effectiveWindow = Math.floor(window * EFFECTIVE_WINDOW_RATIO)
+  const reserve = Math.min(Math.max(0, outputReserve), Math.floor(effectiveWindow / 2))
+  const input = Math.max(
+    0,
+    Math.min(Math.floor(window * AUTO_COMPACT_RATIO), effectiveWindow - reserve)
+  )
+  return {
+    input,
+    recent: Math.floor(input * RECENT_RETENTION_RATIO),
   }
-  return Math.ceil((text.length - nonAscii) / 3 + nonAscii * 1.25)
+}
+
+/** 按当前估算输入与 5% 安全缓冲动态收敛本轮 max_tokens，避免触发 input + max_tokens > window。 */
+export const resolveMaxOutputTokens = (
+  requestedMaxOutput: number,
+  estimatedInput: number,
+  minOutputReserve: number,
+  window = WINDOW_TOKENS
+) => {
+  const effectiveWindow = Math.floor(window * EFFECTIVE_WINDOW_RATIO)
+  const available = Math.max(minOutputReserve, effectiveWindow - Math.max(0, estimatedInput))
+  return Math.min(requestedMaxOutput, available)
 }
 
 const estimateFileTokens = (file: FileAttachment) => {
@@ -61,17 +79,17 @@ export const textPrefixLength = (text: string, budget: number): number => {
   if (budget <= 0) {
     return 0
   }
-  let length = Math.min(text.length, budget * 3)
+  let length = Math.min(text.length, budget * 6)
   for (;;) {
     const next = text.charCodeAt(length)
     if (length > 0 && next >= 0xdc00 && next <= 0xdfff) {
       length--
     }
-    const cost = estimateTextTokens(text.slice(0, length))
-    if (cost <= budget) {
+    const cost = estimateTextTokens(text, length)
+    if (cost <= budget || length === 0) {
       break
     }
-    length = Math.floor((length * budget) / cost)
+    length = Math.min(length - 1, Math.floor((length * budget) / cost))
   }
   if (length > 0 && length < text.length) {
     const newline = text.lastIndexOf('\n', length - 1) + 1
@@ -90,6 +108,71 @@ export type HistoryContext = { history: Message[]; summary?: string; tokens: num
 const roundTokens = ([user, reply]: Round) => {
   const links = reply.blocks.filter((block) => block.type === 'web_fetch_tool_result').length
   return estimateQuestionTokens(user) + estimateTextTokens(getReplyText(reply)) + links * 8_192 + 32
+}
+
+const scaleTokens = (tokens: number, scale: number) =>
+  scale === 1 ? tokens : Math.ceil(tokens * scale)
+
+/**
+ * 利用当前分支最近一条无工具、无附件、未截断的同模型回复 usage 校准本地估算倍率。
+ * 既能吸收文本领域的残余误差，也能自适应自定义第三方模型的不同分词器。
+ */
+export const estimateBranchScale = (
+  history: Message[],
+  model: string,
+  checkpoints?: ContextCheckpoint[]
+): number => {
+  const rounds = getContextRounds(history)
+  if (!rounds.length) {
+    return 1
+  }
+  if (checkpoints?.length) {
+    const byReply = new Set(checkpoints.map(({ replyId }) => replyId))
+    if (rounds.some(([, reply]) => byReply.has(reply.id))) {
+      return 1
+    }
+  }
+  let historyEstimate = 0
+  let calibrated = 1
+  for (const round of rounds) {
+    const [user, reply] = round
+    if (user.files.some((file) => Boolean(file.serverId || file.mimeType))) {
+      return calibrated
+    }
+    const hasTools = reply.blocks.some(
+      (block) =>
+        block.type === 'server_tool_use' ||
+        block.type === 'web_search_tool_result' ||
+        block.type === 'web_fetch_tool_result'
+    )
+    if (hasTools) {
+      return calibrated
+    }
+    const promptEstimate = historyEstimate + estimateQuestionTokens(user)
+    const textBlocks = reply.blocks.filter((block) => block.type === 'text' && !block.isTemplate)
+    if (
+      reply.status === 'done' &&
+      reply.usage &&
+      reply.model === model &&
+      textBlocks.length <= 1 &&
+      promptEstimate >= MIN_CALIBRATION_TOKENS
+    ) {
+      const actualPrompt =
+        reply.usage.input_tokens +
+        reply.usage.cache_creation_input_tokens +
+        reply.usage.cache_read_input_tokens
+      if (
+        Number.isFinite(actualPrompt) &&
+        actualPrompt >= MIN_CALIBRATION_TOKENS &&
+        actualPrompt > FIXED_PROMPT_OVERHEAD
+      ) {
+        const ratio = (actualPrompt - FIXED_PROMPT_OVERHEAD) / promptEstimate
+        calibrated = Math.min(MAX_CALIBRATION_SCALE, Math.max(MIN_CALIBRATION_SCALE, ratio))
+      }
+    }
+    historyEstimate += roundTokens(round)
+  }
+  return calibrated
 }
 
 const roundText = ([user, reply]: Round) => {
@@ -118,18 +201,19 @@ const fitRecent = (costs: number[], after: number, budget: number) => {
   return { index, tokens }
 }
 
-const readBatch = (rounds: Round[], cursor: Cursor, end: number, budget: number) => {
+const readBatch = (rounds: Round[], cursor: Cursor, end: number, budget: number, scale: number) => {
   const excerpts: string[] = []
   let { index, offset } = cursor
   while (index < end && budget >= 128) {
     const content = roundText(rounds[index]).slice(offset)
-    const length = textPrefixLength(content, budget - 64)
+    const rawBudget = Math.floor((budget - 64) / scale)
+    const length = textPrefixLength(content, rawBudget)
     if (length < content.length && excerpts.length) {
       break
     }
     const excerpt = content.slice(0, length)
     excerpts.push(excerpt)
-    budget -= estimateTextTokens(excerpt) + 64
+    budget -= scaleTokens(estimateTextTokens(excerpt), scale) + 64
     if (length < content.length) {
       offset += length
       break
@@ -158,6 +242,7 @@ export const prepareHistoryContext = async ({
   save,
   signal,
   batchBudget = SUMMARY_BATCH_TOKENS,
+  scale = 1,
 }: {
   history: Message[]
   checkpoints?: ContextCheckpoint[]
@@ -167,13 +252,14 @@ export const prepareHistoryContext = async ({
   save: (checkpoint: ContextCheckpoint) => void
   signal: AbortSignal
   batchBudget?: number
+  scale?: number
 }): Promise<HistoryContext> => {
   throwIfAborted(signal)
   if (budget < 64) {
     return { history: [], tokens: 0 }
   }
   const rounds = getContextRounds(history)
-  const costs = rounds.map(roundTokens)
+  const costs = rounds.map((round) => scaleTokens(roundTokens(round), scale))
   const byReply = new Map(checkpoints?.map((checkpoint) => [checkpoint.replyId, checkpoint]))
   let index = rounds.findLastIndex(([, reply]) => byReply.has(reply.id))
   let checkpoint = index >= 0 ? byReply.get(rounds[index][1].id) : undefined
@@ -181,11 +267,15 @@ export const prepareHistoryContext = async ({
     index++
   }
   let cursor = { index, offset: checkpoint?.offset ?? 0 }
-  const remaining = fitRecent(costs, cursor.index, budget - summaryTokens(checkpoint?.summary))
+  const remaining = fitRecent(
+    costs,
+    cursor.index,
+    budget - summaryTokens(checkpoint?.summary, scale)
+  )
   if (remaining.index > cursor.index || cursor.offset) {
     const summaryReserve = Math.max(
       Math.min(SUMMARY_OUTPUT_TOKENS, Math.floor(budget / 4)),
-      summaryTokens(checkpoint?.summary)
+      summaryTokens(checkpoint?.summary, scale)
     )
     const recentTarget = Math.max(recentBudget, costs.at(-1) ?? 0)
     const end = Math.max(
@@ -195,7 +285,7 @@ export const prepareHistoryContext = async ({
     const firstBatchBudget = batchBudget
     while (cursor.index < end && batchBudget >= 128) {
       throwIfAborted(signal)
-      const { excerpts, next } = readBatch(rounds, cursor, end, batchBudget)
+      const { excerpts, next } = readBatch(rounds, cursor, end, batchBudget, scale)
       try {
         const summary = await summarize({ previous: checkpoint?.summary, excerpts })
         throwIfAborted(signal)
@@ -223,15 +313,16 @@ export const prepareHistoryContext = async ({
   const latest = after < costs.length ? (costs.at(-1) ?? 0) : 0
   const summaryBudget = latest <= budget ? budget - latest : budget
   const summary =
-    checkpoint && summaryTokens(checkpoint.summary) <= summaryBudget
+    checkpoint && summaryTokens(checkpoint.summary, scale) <= summaryBudget
       ? checkpoint.summary
       : undefined
-  const retained = fitRecent(costs, after, budget - summaryTokens(summary))
+  const retained = fitRecent(costs, after, budget - summaryTokens(summary, scale))
   return {
     history: rounds.slice(retained.index).flat(),
     summary,
-    tokens: retained.tokens + summaryTokens(summary),
+    tokens: retained.tokens + summaryTokens(summary, scale),
   }
 }
 
-const summaryTokens = (summary?: string) => (summary ? estimateTextTokens(summary) + 64 : 0)
+const summaryTokens = (summary: string | undefined, scale = 1) =>
+  summary ? scaleTokens(estimateTextTokens(summary), scale) + 64 : 0

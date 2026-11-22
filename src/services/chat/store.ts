@@ -30,10 +30,13 @@ import { appendBranch, getVisibleMessages, normalizeSession, selectVersion } fro
 import type { ImportArchiveResult } from './history/importArchive.js'
 import {
   contextBudget,
+  estimateBranchScale,
   estimatePrefixTokens,
   estimateQuestionTokens,
   prepareHistoryContext,
+  resolveMaxOutputTokens,
   saveContextCheckpoint,
+  WINDOW_TOKENS,
   type HistoryContext,
 } from './context.js'
 import {
@@ -73,6 +76,9 @@ import {
 
 /** DeepSeek Flash 和 Pro 的官方最大输出预算（384K，含思考）。 */
 const MAX_OUTPUT_TOKENS = 393_216
+/** 长上下文下的最小输出保底（5% 窗口），与 5% 安全缓冲配合对齐 90% 触发线。 */
+const MIN_OUTPUT_RESERVE = 52_428
+const PROMPT_OVERHEAD_TOKENS = 256
 const CUSTOM_OUTPUT_TOKENS = 4_096
 const CUSTOM_CONTEXT_WINDOW = 128 * 1024
 /** 所有生成请求统一携带的助手身份说明 */
@@ -1361,11 +1367,25 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   const signal = controller.signal
   const summarize = createContextSummarizer(apiKey, signal, chatConfig, model)
   const initialOutputTokens = custom ? CUSTOM_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS
+  const minOutputReserve = custom ? CUSTOM_OUTPUT_TOKENS : MIN_OUTPUT_RESERVE
+  const fallbackOutputTokens = custom ? 1_024 : initial.thinking ? 65_536 : 8_192
   const window = custom ? CUSTOM_CONTEXT_WINDOW : undefined
-  const budget = contextBudget(initialOutputTokens, window)
+  const windowLimit = window ?? WINDOW_TOKENS
+  const tokenScale = estimateBranchScale(
+    request.history,
+    model ?? '',
+    getSession(sessionId)?.contextCheckpoints
+  )
+  const scaleEstimate = (tokens: number) =>
+    tokenScale === 1 ? tokens : Math.ceil(tokens * tokenScale)
+  const budget = contextBudget(minOutputReserve, window)
   let historyBudget = Math.max(
     0,
-    budget.input - estimateQuestionTokens(request.question) - estimatePrefixTokens(request.prefix)
+    budget.input -
+      scaleEstimate(
+        estimateQuestionTokens(request.question) + estimatePrefixTokens(request.prefix)
+      ) -
+      PROMPT_OVERHEAD_TOKENS
   )
   let historyRetries = 0
   let historySummaryRequests = 0
@@ -1381,6 +1401,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
       let receivedContent = false
       let messages: MessageParam[] = []
       let attempt = request
+      let estimatedInput = 0
+      let requestMaxOutput = maxOutputTokens
       try {
         throwIfAborted(signal)
         if (!model) {
@@ -1391,6 +1413,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           checkpoints: getSession(sessionId)?.contextCheckpoints,
           budget: historyBudget,
           recentBudget: budget.recent,
+          scale: tokenScale,
           summarize: (input) =>
             historySummaryRequests++ < HISTORY_SUMMARY_LIMIT
               ? summarize(input)
@@ -1457,9 +1480,12 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             0,
             Math.min(
               budget.recent,
-              contextBudget(maxOutputTokens, window).input -
-                estimateQuestionTokens(reducedInput.question) -
-                estimatePrefixTokens(reducedInput.prefix)
+              contextBudget(Math.min(minOutputReserve, maxOutputTokens), window).input -
+                scaleEstimate(
+                  estimateQuestionTokens(reducedInput.question) +
+                    estimatePrefixTokens(reducedInput.prefix)
+                ) -
+                PROMPT_OVERHEAD_TOKENS
             )
           )
           context = undefined
@@ -1474,18 +1500,32 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         reply = { ...reply, latestReminder }
         updateReply(sessionId, reply)
         persist(sessionId)
+        const activeQuestion = reducedInput?.question ?? prepared.question
+        const activePrefix = reducedInput ? reducedInput.prefix : prepared.prefix
         messages = toRequestMessages(
           prepared.history,
-          reducedInput?.question ?? prepared.question,
-          reducedInput ? reducedInput.prefix : prepared.prefix,
+          activeQuestion,
+          activePrefix,
           initial.thinking ?? false,
           latestReminder,
           inlineFiles
         )
         includeContextSummary(messages, context.summary)
+        estimatedInput =
+          context.tokens +
+          scaleEstimate(
+            estimateQuestionTokens(activeQuestion) + estimatePrefixTokens(activePrefix)
+          ) +
+          PROMPT_OVERHEAD_TOKENS
+        requestMaxOutput = resolveMaxOutputTokens(
+          maxOutputTokens,
+          estimatedInput,
+          Math.min(minOutputReserve, maxOutputTokens),
+          window
+        )
         const body: CreateMessageRequest = {
           model,
-          max_tokens: maxOutputTokens,
+          max_tokens: requestMaxOutput,
           system: inlineAttachments ? '' : SYSTEM_PROMPT,
           messages,
           thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
@@ -1549,6 +1589,14 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         // 收到过内容块（含丢弃的客户端工具）后不自动重发。
         if (!receivedContent) {
           if (isContextOverflow(error)) {
+            if (
+              requestMaxOutput > fallbackOutputTokens &&
+              estimatedInput + requestMaxOutput >= Math.floor(windowLimit * 0.85)
+            ) {
+              // 高输入场景下因 max_tokens 占满窗口导致的溢出，优先缩小输出预算，不误砍历史。
+              maxOutputTokens = fallbackOutputTokens
+              continue
+            }
             if (context?.tokens) {
               // 每次严格收紧历史预算。最后一次保留本轮输入，验证是否是输入本身过长。
               historyBudget =
@@ -1556,8 +1604,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
               context = undefined
               continue
             }
-            if (maxOutputTokens === initialOutputTokens) {
-              maxOutputTokens = custom ? 1_024 : initial.thinking ? 65_536 : 8_192
+            if (maxOutputTokens > fallbackOutputTokens) {
+              maxOutputTokens = fallbackOutputTokens
               continue
             }
             if (!reduceInput) {

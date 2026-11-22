@@ -4,6 +4,7 @@ import { useSettings } from '../settings.js'
 import {
   CHAT_API_PATHS,
   DEFAULT_CHAT_FORMAT,
+  DEEP_THINK_EFFORT,
   type ChatApiFormat,
   type ChatConfig,
 } from './chatConfig.js'
@@ -233,7 +234,11 @@ const openMessageStream = (
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
     },
-    body: JSON.stringify({ ...body, stream: true }),
+    body: JSON.stringify({
+      ...body,
+      ...(body.thinking.type === 'enabled' ? { output_config: { effort: DEEP_THINK_EFFORT } } : {}),
+      stream: true,
+    }),
     signal,
   })
 

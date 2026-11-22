@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useRef } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { android } from './android.js'
 import { AndroidUpdatePrompt } from './AndroidUpdatePrompt.js'
 import { useAndroidBackInterception } from './useAndroidBackInterception.js'
@@ -34,7 +34,11 @@ import { Button } from '../components/base/Button.js'
 import { stopReadAloud } from '../services/speech/readAloud.js'
 import { setInert } from '../utils/inert.js'
 import { CollapsedSider } from '../components/sider/CollapsedSider.js'
-import { closeMobileSider, openMobileSider, useMobileSider } from '../components/sider/mobileSiderState.js'
+import {
+  closeMobileSider,
+  openMobileSider,
+  useMobileSider,
+} from '../components/sider/mobileSiderState.js'
 import { MobileSider, Sider } from '../components/sider/Sider.js'
 import { useAndroidDrawerGesture } from '../components/sider/useAndroidDrawerGesture.js'
 import styles from './App.module.css'
@@ -61,6 +65,36 @@ const ChatContent = memo(function ChatContent({
   const streaming = useChatStore((state) =>
     state.activeId === null ? false : Object.hasOwn(state.streaming, state.activeId)
   )
+
+  const [startup, setStartup] = useState(false)
+  const waitingForHistory = !ready && !initError
+  const revealWelcome = startup && ready && activeId === null
+
+  useLayoutEffect(() => {
+    if (
+      android?.consumeStartupAnimation?.() &&
+      !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ) {
+      setStartup(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!startup) {
+      return
+    }
+    if (!waitingForHistory && !revealWelcome) {
+      setStartup(false)
+      return
+    }
+    // Hide a brief loading flash, but don't conceal slow or failed storage reads.
+    const timeout = window.setTimeout(() => setStartup(false), waitingForHistory ? 850 : 300)
+    return () => window.clearTimeout(timeout)
+  }, [revealWelcome, startup, waitingForHistory])
+
+  if (startup && waitingForHistory) {
+    return null
+  }
 
   if (!ready || (activeId !== null && !session)) {
     const loadFailed = !ready ? initError : sessionLoadError
@@ -99,7 +133,7 @@ const ChatContent = memo(function ChatContent({
   return session ? (
     <SessionView session={session} streaming={streaming} siderCollapsed={siderCollapsed} />
   ) : (
-    <Welcome />
+    <Welcome startup={revealWelcome} />
   )
 })
 
@@ -129,12 +163,6 @@ export const App = () => {
 
   useAndroidBackInterception(overlayOpen)
   usePreventPageScroll(isMobile && !android)
-
-  useEffect(() => {
-    if (apiKey) {
-      android?.consumeStartupAnimation?.()
-    }
-  }, [apiKey])
 
   useEffect(() => {
     document.documentElement.lang = locale
