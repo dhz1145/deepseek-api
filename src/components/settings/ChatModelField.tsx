@@ -23,9 +23,9 @@ export const ChatModelField = () => {
     const { signal } = controller
     setStatus('loading')
     void listChatModels(apiKey, apiBaseUrl, signal, format).then(
-      (items) => {
+      ({ models, profiles }) => {
         if (!signal.aborted) {
-          updateChatModels(apiKey, apiBaseUrl, items, format)
+          updateChatModels(apiKey, apiBaseUrl, models, format, profiles)
           setStatus('idle')
         }
       },

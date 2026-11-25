@@ -425,6 +425,43 @@ a.row:active,
   text-align: center;
 }
 
+.importLinkChoice {
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+
+  > * {
+    flex-shrink: 0;
+  }
+}
+
+.importLinkField {
+  display: grid;
+  gap: 8px;
+  padding: 0 18px 14px;
+  color: var(--settings-muted);
+  font-size: 13px;
+
+  input {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid var(--settings-line);
+    border-radius: 10px;
+    background: var(--settings-bg);
+    color: var(--dsw-alias-label-primary);
+    font: inherit;
+    font-size: 16px;
+  }
+}
+
+.importLinkStatus {
+  margin: 0 18px 14px;
+  color: var(--settings-muted);
+  font-size: 13px;
+}
+
 .importDescription {
   margin: 14px 18px 18px;
   color: var(--settings-muted);

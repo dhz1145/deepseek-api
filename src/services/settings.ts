@@ -8,6 +8,14 @@ import {
   type ChatApiFormat,
   type ChatConfig,
 } from './api/chatConfig.js'
+import {
+  modelReasoning,
+  resolveReasoningEffort,
+  restoreModelReasoning,
+  SERVER_DEFAULT_EFFORT,
+  type ChatReasoning,
+  type ModelReasoningMap,
+} from './api/modelReasoning.js'
 import type { TtsVoice } from './api/speech.js'
 import type { ChatModel } from './api/types.js'
 import { normalizeLocation, type UserLocation } from './location.js'
@@ -29,6 +37,8 @@ type Settings = {
   apiBaseUrl: string | null
   chatModel: ChatModel | null
   chatModels: ChatModel[] | null
+  reasoningProfiles: ModelReasoningMap
+  reasoningPreferences: Record<string, string>
   chatConfig: ChatConfig
   accountProfile: AccountProfile
   locale: Locale
@@ -39,6 +49,10 @@ type Settings = {
   autoRead: boolean
   thinking: boolean
   search: boolean
+  responsesThinking: boolean
+  responsesSearch: boolean
+  chatThinking: boolean
+  chatSearch: boolean
   siderCollapsed: boolean
   fontSize: number | null
   foldThinking: boolean
@@ -48,6 +62,8 @@ type Settings = {
 const KEYS = {
   apiKey: 'chat-demo:api-key',
   chatModel: 'dsapi:chat-model',
+  reasoningProfiles: 'dsapi:reasoning-profiles',
+  reasoningPreferences: 'dsapi:reasoning-effort',
   accountProfile: 'dsapi:account-profile',
   locale: 'chat-demo:locale',
   location: 'chat-demo:location',
@@ -56,6 +72,10 @@ const KEYS = {
   autoRead: 'dsapi:auto-read',
   thinking: 'chat-demo:thinking',
   search: 'chat-demo:search',
+  responsesThinking: 'dsapi:responses-thinking',
+  responsesSearch: 'dsapi:responses-search',
+  chatThinking: 'dsapi:chat-thinking',
+  chatSearch: 'dsapi:chat-search',
   siderCollapsed: 'chat-demo:sider-collapsed',
   fontSize: 'dsapi:font-size',
   foldThinking: 'dsapi:fold-thinking',
@@ -241,6 +261,42 @@ const chooseChatModel = (
   return models?.length === 1 ? models[0] : null
 }
 
+const connectionScope = ({ endpoint, format }: ChatConfig) => JSON.stringify([endpoint, format])
+const effortScope = ({ endpoint, format }: ChatConfig, model: ChatModel) =>
+  JSON.stringify([endpoint, format, model])
+
+const readReasoningProfiles = (config: ChatConfig): ModelReasoningMap => {
+  try {
+    const cached = JSON.parse(read(KEYS.reasoningProfiles) ?? 'null')
+    if (cached?.scope === connectionScope(config)) {
+      return restoreModelReasoning(cached.profiles)
+    }
+  } catch {
+    // A malformed cache never prevents using the model's documented options.
+  }
+  return new Map()
+}
+
+const saveReasoningProfiles = (config: ChatConfig, profiles: ModelReasoningMap) =>
+  write(
+    KEYS.reasoningProfiles,
+    profiles.size
+      ? JSON.stringify({ scope: connectionScope(config), profiles: Object.fromEntries(profiles) })
+      : null
+  )
+
+const readReasoningPreferences = (): Record<string, string> => {
+  try {
+    return Object.fromEntries(
+      Object.entries(JSON.parse(read(KEYS.reasoningPreferences) ?? '{}')).filter(
+        (entry): entry is [string, string] => typeof entry[1] === 'string'
+      )
+    )
+  } catch {
+    return {}
+  }
+}
+
 export const useSettings = create<Settings>(() => {
   const credentials = initialCredentials()
   return {
@@ -250,6 +306,10 @@ export const useSettings = create<Settings>(() => {
       ? readChatModel(credentials.apiBaseUrl, credentials.chatConfig.format)
       : null,
     chatModels: null,
+    reasoningProfiles: credentials.apiKey
+      ? readReasoningProfiles(credentials.chatConfig)
+      : new Map(),
+    reasoningPreferences: readReasoningPreferences(),
     locale: resolveLocale(initialLocalePreference()),
     localePreference: initialLocalePreference(),
     location: initialLocation(),
@@ -258,6 +318,10 @@ export const useSettings = create<Settings>(() => {
     autoRead: read(KEYS.autoRead) === 'true',
     thinking: read(KEYS.thinking) === 'true',
     search: (read(KEYS.search) ?? (android ? 'true' : 'false')) === 'true',
+    responsesThinking: read(KEYS.responsesThinking) === 'true',
+    responsesSearch: read(KEYS.responsesSearch) === 'true',
+    chatThinking: read(KEYS.chatThinking) === 'true',
+    chatSearch: read(KEYS.chatSearch) === 'true',
     siderCollapsed: read(KEYS.siderCollapsed) === 'true',
     fontSize: initialFontSize(),
     foldThinking: read(KEYS.foldThinking) !== 'false',
@@ -319,7 +383,8 @@ export const setApiKey = (
   apiKey: string | null,
   address = useSettings.getState().apiBaseUrl,
   chatModels: ChatModel[] | null = null,
-  format = useSettings.getState().chatConfig.format
+  format = useSettings.getState().chatConfig.format,
+  profiles: ModelReasoningMap = new Map()
 ) => {
   const apiBaseUrl = apiKey ? address : null
   const selectedFormat = apiKey ? format : DEFAULT_CHAT_FORMAT
@@ -341,12 +406,15 @@ export const setApiKey = (
     ? chooseChatModel(chatModels, readChatModel(apiBaseUrl, selectedFormat))
     : null
   saveChatModel(apiBaseUrl, selectedFormat, chatModel)
+  const reasoningProfiles = apiKey ? profiles : new Map()
+  saveReasoningProfiles(chatConfig, reasoningProfiles)
   useSettings.setState({
     apiKey,
     apiBaseUrl,
     chatConfig,
     chatModel,
     chatModels: apiKey ? chatModels : null,
+    reasoningProfiles,
   })
   return true
 }
@@ -355,7 +423,8 @@ export const updateChatModels = (
   apiKey: string,
   apiBaseUrl: string | null,
   chatModels: ChatModel[],
-  format: ChatApiFormat
+  format: ChatApiFormat,
+  reasoningProfiles: ModelReasoningMap
 ) => {
   const current = useSettings.getState()
   if (
@@ -367,7 +436,8 @@ export const updateChatModels = (
   }
   const chatModel = chooseChatModel(chatModels, current.chatModel)
   saveChatModel(apiBaseUrl, format, chatModel)
-  useSettings.setState({ chatModels, chatModel })
+  saveReasoningProfiles(current.chatConfig, reasoningProfiles)
+  useSettings.setState({ chatModels, chatModel, reasoningProfiles })
 }
 
 export const setChatModel = (chatModel: ChatModel) => {
@@ -378,15 +448,60 @@ export const setChatModel = (chatModel: ChatModel) => {
   }
 }
 
-export const setThinking = (thinking: boolean) => {
-  write(KEYS.thinking, String(thinking))
-  useSettings.setState({ thinking })
+export const getReasoningChoice = (state: Settings, model = state.chatModel) => {
+  const { chatConfig, reasoningProfiles, reasoningPreferences } = state
+  const profile = model
+    ? modelReasoning(chatConfig, model, reasoningProfiles)
+    : { efforts: [], messagesThinking: undefined, canDisableThinking: undefined }
+  const effort = resolveReasoningEffort(
+    profile.efforts,
+    model ? reasoningPreferences[effortScope(chatConfig, model)] : undefined
+  )
+  return { ...profile, effort }
 }
 
-export const setSearch = (search: boolean) => {
-  write(KEYS.search, String(search))
-  useSettings.setState({ search })
+export const getChatReasoning = (state: Settings, model: ChatModel): ChatReasoning => {
+  const { effort, messagesThinking, canDisableThinking } = getReasoningChoice(state, model)
+  return { effort: effort || undefined, messagesThinking, canDisableThinking }
 }
+
+export const setReasoningEffort = (effort: string) => {
+  const current = useSettings.getState()
+  const { apiKey, chatConfig, chatModel } = current
+  if (
+    !apiKey ||
+    !chatModel ||
+    (effort !== SERVER_DEFAULT_EFFORT && !getReasoningChoice(current).efforts.includes(effort))
+  ) {
+    return
+  }
+  const reasoningPreferences = {
+    ...current.reasoningPreferences,
+    [effortScope(chatConfig, chatModel)]: effort,
+  }
+  write(KEYS.reasoningPreferences, JSON.stringify(reasoningPreferences))
+  useSettings.setState({ reasoningPreferences })
+}
+
+// Custom gateways opt in separately for each OpenAI protocol. Do not inherit DeepSeek defaults.
+const chatOptionKeys = ({ endpoint, format }: ChatConfig) =>
+  !endpoint || format === 'messages'
+    ? (['thinking', 'search'] as const)
+    : format === 'responses'
+      ? (['responsesThinking', 'responsesSearch'] as const)
+      : (['chatThinking', 'chatSearch'] as const)
+
+export const isThinkingEnabled = (state: Settings) => state[chatOptionKeys(state.chatConfig)[0]]
+export const isSearchEnabled = (state: Settings) => state[chatOptionKeys(state.chatConfig)[1]]
+
+const setChatOption = (index: 0 | 1, enabled: boolean) => {
+  const key = chatOptionKeys(useSettings.getState().chatConfig)[index]
+  write(KEYS[key], String(enabled))
+  useSettings.setState({ [key]: enabled })
+}
+
+export const setThinking = (thinking: boolean) => setChatOption(0, thinking)
+export const setSearch = (search: boolean) => setChatOption(1, search)
 
 export const setSiderCollapsed = (siderCollapsed: boolean) => {
   write(KEYS.siderCollapsed, String(siderCollapsed))

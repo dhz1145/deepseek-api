@@ -61,14 +61,9 @@
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .container[data-chat-startup] > :not(.welcome),
-  .container[data-chat-startup] .greeting {
+  /* Reveal the header, greeting and composer as a single cold-start frame. */
+  .container[data-chat-startup] {
     animation: reveal-welcome 180ms ease-out both;
-  }
-
-  /* ChatInput's root follows the greeting; leave layout and hit targets unchanged. */
-  .container[data-chat-startup] .greeting + * {
-    animation: reveal-welcome 180ms ease-out 65ms both;
   }
 }
 

@@ -273,6 +273,7 @@ globalThis.__API_ORIGIN__ = 'https://mock.invalid'
 const { mergeSessions } = await import('../src/services/chat/history/mergeSessions.ts')
 const { exportArchive } = await import('../src/services/chat/history/exportArchive.ts')
 const { importArchive } = await import('../src/services/chat/history/importArchive.ts')
+const { downloadHistoryArchive } = await import('../src/services/chat/history/downloadArchive.ts')
 const { readSessionFile, readSessionIndex } = await import('../src/services/chat/history/schema.ts')
 const { toSessionFile } = await import('../src/services/chat/history/toArchive.ts')
 const { toLocalSession } = await import('../src/services/chat/history/toLocal.ts')
@@ -1130,4 +1131,82 @@ test('13. 中英文文案键集合保持完全一致，且文案格式化边界�
     key: 'historyImported',
     params: { count: 4 },
   })
+})
+
+
+test('14. 链接保留签名参数，Android 走原生 HTTPS，下载后走原有合并导入', async (t) => {
+  const archive = await exportArchive([
+    {
+      id: 'link-import-test',
+      title: '链接导入测试',
+      createdAt: 1000,
+      updatedAt: 2000,
+      rootMessageId: 'u1',
+      messages: [userMsg('u1', null, 1000, '来自测试归档')],
+    },
+  ])
+  const url = 'https://backup.example/archive.zip?response-content-disposition=attachment%3B%20test&Expires=123&Signature=a%2Bb%2Fz%3D'
+  const closed = []
+  window.DeepSeekNativeApi = {
+    prepare(address, method, headers) {
+      assert.equal(address, url)
+      assert.equal(method, 'GET')
+      assert.deepEqual(JSON.parse(headers), {})
+      return 'fixture'
+    },
+    cancel(id) { closed.push(id) },
+  }
+  t.after(() => { delete window.DeepSeekNativeApi })
+  t.mock.method(globalThis, 'fetch', async (path) => {
+    assert.equal(path, '/_native_api/fixture')
+    return new Response(archive)
+  })
+  const file = await downloadHistoryArchive(`  ${url}\n`)
+  assert.equal(file.type, 'application/zip')
+  assert.deepEqual(await file.bytes(), await archive.bytes())
+  assert.deepEqual(closed, ['fixture'])
+  const result = await importHistory(file)
+  assert.equal(result.added, 1)
+  assert.equal((await loadSession('link-import-test')).title, '链接导入测试')
+})
+
+test('15. 链接下载拒绝不安全地址，对失效链接和过大内容给出独立提示', async (t) => {
+  let requested = 0
+  let response = new Response('private signed detail', { status: 403 })
+  t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    requested += 1
+    assert.equal(options.credentials, 'omit')
+    assert.equal(options.redirect, 'error')
+    return response
+  })
+  for (const invalid of ['http://backup.example/archive.zip', 'https://x:y@backup.example/', 'https://bad host/', 'https://backup.example/#fragment']) {
+    await assert.rejects(downloadHistoryArchive(invalid), { message: 'historyImportInvalidLink' })
+  }
+  assert.equal(requested, 0)
+  const url = 'https://backup.example/archive.zip'
+  await assert.rejects(downloadHistoryArchive(url), { message: 'historyImportLinkUnavailable' })
+  response = new Response('', { headers: { 'Content-Length': String(512 * 1024 * 1024 + 1) } })
+  await assert.rejects(downloadHistoryArchive(url), { message: 'historyImportLinkTooLarge' })
+  assert.equal(response.bodyUsed, true)
+  response = new Response('upstream failure', { status: 503 })
+  await assert.rejects(downloadHistoryArchive(url), { message: 'historyImportLinkFailed' })
+})
+
+test('16. 下载到一半取消会传给传输层，不进入导入流程', async (t) => {
+  const controller = new AbortController()
+  let requestSignal
+  let cancelled = false
+  t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    requestSignal = options.signal
+    return new Response(new ReadableStream({
+      start(sink) { sink.enqueue(new Uint8Array([80, 75, 3, 4])) },
+      cancel() { cancelled = true },
+    }))
+  })
+  const download = downloadHistoryArchive('https://backup.example/archive.zip', controller.signal)
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  controller.abort()
+  await assert.rejects(download, { message: 'historyImportLinkFailed' })
+  assert.equal(requestSignal.aborted, true)
+  assert.equal(cancelled, true)
 })

@@ -11,7 +11,13 @@ import {
   IconStopFill16,
   IconThinkOutline14,
 } from '../base/icons.js'
-import { setSearch, setThinking, useSettings } from '../../services/settings.js'
+import {
+  isSearchEnabled,
+  isThinkingEnabled,
+  setSearch,
+  setThinking,
+  useSettings,
+} from '../../services/settings.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { editMessage, sendMessage, stopReply, useChatStore } from '../../services/chat/store.js'
 import {
@@ -105,10 +111,10 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const streaming = useChatStore(
     (state) => sessionId !== null && Object.hasOwn(state.streaming, sessionId)
   )
-  const thinking = useSettings((state) => state.thinking)
+  const thinking = useSettings(isThinkingEnabled)
   const importingHistory = useChatStore((state) => state.importingHistory)
   const isMobile = useIsMobile()
-  const search = useSettings((state) => state.search)
+  const search = useSettings(isSearchEnabled)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const togglesRef = useRef<HTMLDivElement>(null)
@@ -546,34 +552,30 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
         <div className={styles.functionRow}>
           {/* 深度思考 / 智能搜索开关，tooltip 在按钮上方 */}
           <div ref={togglesRef} className={styles.toggles}>
-            {customEndpoint ? null : (
-              <>
-                <Tooltip content={t('deactivatedThinkTooltip')}>
-                  <button
-                    type="button"
-                    className={clsx(styles.toggle, thinking && styles.selected)}
-                    aria-label={t('thinkingSwitch')}
-                    aria-pressed={thinking}
-                    onClick={() => setThinking(!thinking)}
-                  >
-                    <IconThinkOutline14 />
-                    <span className={styles.toggleLabel}>{t('thinkingSwitch')}</span>
-                  </button>
-                </Tooltip>
-                <Tooltip content={t('deactivatedSearchTooltip')}>
-                  <button
-                    type="button"
-                    className={clsx(styles.toggle, search && styles.selected)}
-                    aria-label={t('search')}
-                    aria-pressed={search}
-                    onClick={() => setSearch(!search)}
-                  >
-                    <IconGlobeLanguageOutline14 />
-                    <span className={styles.toggleLabel}>{t('search')}</span>
-                  </button>
-                </Tooltip>
-              </>
-            )}
+            <Tooltip content={t('deactivatedThinkTooltip')}>
+              <button
+                type="button"
+                className={clsx(styles.toggle, thinking && styles.selected)}
+                aria-label={t('thinkingSwitch')}
+                aria-pressed={thinking}
+                onClick={() => setThinking(!thinking)}
+              >
+                <IconThinkOutline14 />
+                <span className={styles.toggleLabel}>{t('thinkingSwitch')}</span>
+              </button>
+            </Tooltip>
+            <Tooltip content={t('deactivatedSearchTooltip')}>
+              <button
+                type="button"
+                className={clsx(styles.toggle, search && styles.selected)}
+                aria-label={t('search')}
+                aria-pressed={search}
+                onClick={() => setSearch(!search)}
+              >
+                <IconGlobeLanguageOutline14 />
+                <span className={styles.toggleLabel}>{t('search')}</span>
+              </button>
+            </Tooltip>
           </div>
           <div className={styles.right}>
             {android ? (

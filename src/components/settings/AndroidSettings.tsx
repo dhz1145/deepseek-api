@@ -16,6 +16,7 @@ import {
   importHistory,
   type ImportMode,
 } from '../../services/chat/backup.js'
+import { downloadHistoryArchive } from '../../services/chat/history/downloadArchive.js'
 import { useChatStore } from '../../services/chat/store.js'
 import { setInert } from '../../utils/inert.js'
 import {
@@ -23,6 +24,7 @@ import {
   setFoldThinking,
   setFontSize,
   setLocale,
+  setReasoningEffort,
   setThemePreference,
   setTtsVoice,
   useSettings,
@@ -40,6 +42,7 @@ import {
   IconLinkOutline16,
   IconRefreshOutline16,
   IconSettingsOutline16,
+  IconThinkOutline16,
 } from '../base/icons.js'
 import { showToast } from '../base/toastState.js'
 import { closeOverlaySider } from '../sider/mobileSiderState.js'
@@ -49,6 +52,7 @@ import { createSettingsPageMotion } from './androidSettingsMotion.js'
 import { ProfileIcon } from './ProfileAvatar.js'
 import { ProfileEditor } from './ProfileEditor.js'
 import { SettingsChoice } from './SettingsChoice.js'
+import { useReasoningChoice } from './useReasoningChoice.js'
 import { closeSettings, useSettingsDialog } from './settingsDialogState.js'
 import styles from './AndroidSettings.module.css'
 
@@ -61,7 +65,16 @@ const faqUrl = 'https://static.deepseek.com/faq/index.html'
 const releasesUrl = 'https://github.com/dhz1145/deepseek-api/releases/latest'
 
 type Page = 'root' | 'account' | 'data' | 'export' | 'font' | 'personalization' | 'agreements'
-type Popup = 'locale' | 'theme' | 'voice' | 'logout' | 'delete' | 'import'
+type Popup =
+  | 'locale'
+  | 'reasoning-effort'
+  | 'theme'
+  | 'voice'
+  | 'logout'
+  | 'delete'
+  | 'import-source'
+  | 'import-link'
+  | 'import'
 
 const parentPage: Record<Page, Page | null> = {
   root: null,
@@ -185,6 +198,7 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
   const t = useTranslate()
   const { locale, localePreference, themePreference, fontSize, foldThinking, ttsVoice } =
     useSettings()
+  const reasoningChoice = useReasoningChoice()
   const tr = (chinese: string, english: string) => (locale === 'zh-CN' ? chinese : english)
   const [page, setPage] = useState<Page>(start)
   const [popup, setPopup] = useState<Popup | null>(null)
@@ -195,6 +209,9 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
   const [file, setFile] = useState<File | null>(null)
   const [importMode, setImportMode] = useState<ImportMode>('merge')
   const [importStatus, setImportStatus] = useState<LinkedMessage | null>(null)
+  const [importLink, setImportLink] = useState('')
+  const [linkStatus, setLinkStatus] = useState<LinkedMessage | null>(null)
+  const linkDownload = useRef<AbortController | null>(null)
   const [exportSavedName, setExportSavedName] = useState<string | null>(null)
   const importInput = useRef<HTMLInputElement>(null)
   const pagesRef = useRef<HTMLDivElement>(null)
@@ -203,6 +220,8 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
   const exiting = useRef(false)
   const sessions = useChatStore((state) => state.sessions.length)
   const editor = useApiKeyEditor()
+  useEffect(() => () => linkDownload.current?.abort(), [])
+
   const updateBusy = update.phase === 'checking' || update.phase === 'downloading'
 
   useEffect(() => {
@@ -284,12 +303,21 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
   }
 
   const back = () => {
+    if (linkDownload.current) {
+      linkDownload.current.abort()
+      setImportLink('')
+      setLinkStatus(null)
+      setPopup(null)
+      return
+    }
     if (busy || exiting.current) {
       return
     }
     if (popup) {
       setPopup(null)
       setFile(null)
+      setImportLink('')
+      setLinkStatus(null)
       return
     }
     if (page === 'account' && editor.editing) {
@@ -403,7 +431,7 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
   }
 
   const confirmAction = async () => {
-    if (busy) {
+    if (busy || linkDownload.current) {
       return
     }
     if (popup === 'logout') {
@@ -415,12 +443,37 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
       return
     }
     setBusy(true)
+    const importing = popup === 'import' || popup === 'import-link'
     try {
-      if (popup === 'import' && file) {
+      let archive = file
+      if (popup === 'import-link') {
+        const controller = new AbortController()
+        linkDownload.current = controller
+        setLinkStatus({ key: 'historyImportDownloading' })
+        try {
+          archive = await downloadHistoryArchive(importLink, controller.signal)
+          if (controller.signal.aborted) {
+            return
+          }
+        } catch (error) {
+          if (!controller.signal.aborted) {
+            setLinkStatus({
+              key: error instanceof BackupError ? error.key : 'historyImportLinkFailed',
+              type: 'error',
+            })
+          }
+          return
+        } finally {
+          linkDownload.current = null
+        }
+      }
+      if (importing && archive) {
         setPopup(null)
         setFile(null)
+        setImportLink('')
+        setLinkStatus(null)
         setImportStatus({ key: 'historyImporting' })
-        const result = await importHistory(file, setImportStatus, importMode)
+        const result = await importHistory(archive, setImportStatus, importMode)
         setImportStatus(formatImportResult(result))
       } else if (popup === 'delete') {
         await clearHistory()
@@ -428,7 +481,7 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
         setPopup(null)
       }
     } catch (error) {
-      if (popup === 'import') {
+      if (importing) {
         setImportStatus({
           key: error instanceof BackupError ? error.key : 'historyImportFailed',
           type: 'error',
@@ -475,6 +528,13 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
                 value={languageLabel}
                 icon={<IconGlobeLanguageOutline14 />}
                 onClick={() => setPopup('locale')}
+              />
+              <Row
+                label={reasoningChoice.title}
+                value={reasoningChoice.valueLabel}
+                icon={<IconThinkOutline16 />}
+                disabled={!reasoningChoice.ready}
+                onClick={() => setPopup('reasoning-effort')}
               />
               <Row
                 label={appearance}
@@ -631,7 +691,7 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
                 label={t('historyImport')}
                 arrow={false}
                 disabled={busy}
-                onClick={() => importInput.current?.click()}
+                onClick={() => setPopup('import-source')}
               />
               <input
                 ref={importInput}
@@ -815,6 +875,19 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
           dismiss={back}
         />
       ) : null}
+      {popup === 'reasoning-effort' && reasoningChoice.ready ? (
+        <SettingsChoice
+          title={reasoningChoice.title}
+          icon={<IconThinkOutline16 />}
+          value={reasoningChoice.value}
+          fields={reasoningChoice.fields}
+          confirm={(value) => {
+            setReasoningEffort(value)
+            setPopup(null)
+          }}
+          dismiss={back}
+        />
+      ) : null}
       {popup === 'theme' ? (
         <SettingsChoice
           title={appearance}
@@ -878,7 +951,7 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
           </section>
         </div>
       ) : null}
-      {popup === 'import' ? (
+      {popup === 'import-source' ? (
         <div
           className={styles.overlay}
           onClick={(event) => {
@@ -891,9 +964,71 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
             className={styles.choice}
             role="dialog"
             aria-modal="true"
-            aria-label={t('historyImportConfirmTitle')}
+            aria-label={t('historyImportChooseSource')}
           >
-            <header>{t('historyImportConfirmTitle')}</header>
+            <header>{t('historyImportChooseSource')}</header>
+            <Row
+              label={t('historyImportFromFile')}
+              onClick={() => {
+                setPopup(null)
+                importInput.current?.click()
+              }}
+            />
+            <Row
+              label={t('historyImportFromLink')}
+              onClick={() => {
+                setImportMode('merge')
+                setPopup('import-link')
+              }}
+            />
+            <button type="button" className={styles.confirm} onClick={back}>
+              {t('cancel')}
+            </button>
+          </section>
+        </div>
+      ) : null}
+      {popup === 'import' || popup === 'import-link' ? (
+        <div
+          className={styles.overlay}
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              back()
+            }
+          }}
+        >
+          <section
+            className={
+              popup === 'import-link'
+                ? `${styles.choice} ${styles.importLinkChoice}`
+                : styles.choice
+            }
+            role="dialog"
+            aria-modal="true"
+            aria-label={t(
+              popup === 'import-link' ? 'historyImportFromLink' : 'historyImportConfirmTitle'
+            )}
+          >
+            <header>
+              {t(popup === 'import-link' ? 'historyImportFromLink' : 'historyImportConfirmTitle')}
+            </header>
+            {popup === 'import-link' ? (
+              <label className={styles.importLinkField}>
+                {t('historyImportLinkLabel')}
+                <input
+                  type="url"
+                  placeholder="https://…"
+                  value={importLink}
+                  autoComplete="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  disabled={busy}
+                  onChange={(event) => {
+                    setImportLink(event.target.value)
+                    setLinkStatus(null)
+                  }}
+                />
+              </label>
+            ) : null}
             <div
               className={styles.options}
               role="radiogroup"
@@ -925,14 +1060,22 @@ const Settings = ({ start, chatFrame }: { start: Page; chatFrame: RefObject<HTML
                   : 'historyImportModeReplaceDescription'
               )}
             </p>
+            {popup === 'import-link' && linkStatus ? (
+              <p
+                className={styles.importLinkStatus}
+                role={linkStatus.type === 'error' ? 'alert' : 'status'}
+              >
+                {t(linkStatus.key, linkStatus.params)}
+              </p>
+            ) : null}
             <div className={styles.confirmActions}>
-              <button type="button" className={styles.confirm} disabled={busy} onClick={back}>
+              <button type="button" className={styles.confirm} onClick={back}>
                 {t('cancel')}
               </button>
               <button
                 type="button"
                 className={styles.confirm}
-                disabled={busy}
+                disabled={busy || (popup === 'import-link' && !importLink.trim())}
                 data-danger={importMode === 'replace'}
                 onClick={() => void confirmAction()}
               >

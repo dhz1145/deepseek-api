@@ -25,6 +25,7 @@ import {
   isChineseBrowser,
   setLocale,
   setLocation,
+  setReasoningEffort,
   setThemePreference,
   setTtsVoice,
   useSettings,
@@ -39,6 +40,8 @@ import { ApiKeyConfirm, ApiKeyField, useApiKeyEditor } from './ApiKeyField.js'
 import { ChatModelField } from './ChatModelField.js'
 import { ProfileIcon } from './ProfileAvatar.js'
 import { ProfileEditor } from './ProfileEditor.js'
+import { SettingsChoiceField } from './SettingsChoice.js'
+import { useReasoningChoice } from './useReasoningChoice.js'
 import { closeSettings, useSettingsDialog, type SettingsSection } from './settingsDialogState.js'
 import styles from './Settings.module.css'
 
@@ -105,6 +108,7 @@ const SettingsContent = () => {
             <>
               <ThemeSetting />
               <LocaleSetting />
+              <ReasoningEffortSetting />
               <TtsVoiceSetting />
               <LocationSetting />
             </>
@@ -297,6 +301,26 @@ const LocaleSetting = () => {
             { value: 'en-US', label: t('settingsLocaleEnUS'), lang: 'en' },
           ]}
           onChange={setLocale}
+        />
+      }
+    />
+  )
+}
+
+const ReasoningEffortSetting = () => {
+  const { title, ready, value, fields, valueLabel } = useReasoningChoice()
+  return (
+    <SettingCell
+      label={title}
+      status={null}
+      action={
+        <SettingsChoiceField
+          title={title}
+          value={value}
+          fields={fields}
+          fallback={valueLabel}
+          disabled={!ready}
+          confirm={setReasoningEffort}
         />
       }
     />

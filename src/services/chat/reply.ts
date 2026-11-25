@@ -104,7 +104,10 @@ export const applyEvent = (
         if (block.type === 'thinking' && delta.type === 'thinking_delta') {
           return { ...block, thinking: block.thinking + delta.thinking }
         }
-        if (block.type === 'thinking' && delta.type === 'signature_delta') {
+        if (
+          (block.type === 'thinking' || block.type === 'web_fetch_tool_result') &&
+          delta.type === 'signature_delta'
+        ) {
           return { ...block, signature: (block.signature ?? '') + delta.signature }
         }
         if (block.type === 'text' && delta.type === 'citations_delta') {

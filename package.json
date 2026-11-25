@@ -1,6 +1,6 @@
 {
   "name": "deepseek-api",
-  "version": "0.7.9",
+  "version": "0.7.10",
   "description": "支持自定义 Anthropic 与 OpenAI 兼容 API 的非官方 Android 客户端。",
   "license": "GPL-3.0-or-later",
   "private": true,

@@ -2,6 +2,7 @@ import { throwIfAborted } from '../../utils/abort.js'
 import { create } from 'zustand'
 import { createId } from '../../utils/id.js'
 import { isCustomAnthropicAddress } from '../api/address.js'
+import { supportsPrefix } from '../api/chatConfig.js'
 import { ApiError, streamChatMessage } from '../api/client.js'
 import type { CreateMessageRequest, MessageParam } from '../api/types.js'
 import {
@@ -25,7 +26,13 @@ import {
   OFFICIAL_FILE_IMAGE_MAX_EDGE,
   readImageLongEdge,
 } from '../imageUpload.js'
-import { setPinnedSessions, useSettings } from '../settings.js'
+import {
+  getChatReasoning,
+  isSearchEnabled,
+  isThinkingEnabled,
+  setPinnedSessions,
+  useSettings,
+} from '../settings.js'
 import { appendBranch, getVisibleMessages, normalizeSession, selectVersion } from './branches.js'
 import type { ImportArchiveResult } from './history/importArchive.js'
 import {
@@ -310,16 +317,16 @@ export const bindChatPersistence = () => {
 
 /** 按当前开关创建回复：深度思考对应 thinking，智能搜索控制 deepseek_web_search。 */
 const createReply = (): AssistantMessage => {
-  const { thinking, search, chatConfig, chatModel } = useSettings.getState()
-  const customEndpoint = Boolean(chatConfig.endpoint && chatConfig.format !== 'messages')
+  const settings = useSettings.getState()
+  const { chatConfig, chatModel } = settings
   return {
     id: createId(),
     role: 'assistant',
     createdAt: Date.now(),
     model: chatModel,
-    thinking: !customEndpoint && thinking,
-    search: !customEndpoint && search,
-    prefix: !customEndpoint && chatConfig.format === 'messages',
+    thinking: isThinkingEnabled(settings),
+    search: isSearchEnabled(settings),
+    prefix: supportsPrefix(chatConfig),
     status: 'pending',
     blocks: [],
   }
@@ -895,7 +902,7 @@ export const continueReply = (sessionId: string, messageId: string) => {
   if (
     get().importingHistory ||
     deletingSessions.has(sessionId) ||
-    chatConfig.format !== 'messages'
+    !supportsPrefix(chatConfig)
   ) {
     return
   }
@@ -1324,12 +1331,14 @@ const waitForRetry = (attempt: number, signal: AbortSignal) =>
  * 服务端拒绝附件时尝试重新补传后重发。失效的 file_id 退避重试，图片按报错中指明的位置修复。
  */
 const streamReply = async (sessionId: string, initial: AssistantMessage, request: Request) => {
-  const { apiKey: storedKey, apiBaseUrl, chatConfig, chatModel } = useSettings.getState()
+  const settings = useSettings.getState()
+  const { apiKey: storedKey, apiBaseUrl, chatConfig, chatModel } = settings
   const apiKey = storedKey ?? ''
   const custom = Boolean(chatConfig.endpoint)
   const inlineAttachments = custom && chatConfig.format !== 'messages'
   const allowInlineImages = isCustomAnthropicAddress(apiBaseUrl, chatConfig.format)
   const model = (inlineAttachments ? chatModel : (initial.model ?? chatModel)) || null
+  const reasoning = model ? getChatReasoning(settings, model) : undefined
   const controller = new AbortController()
   const unsubscribeCredentials = useSettings.subscribe((current, previous) => {
     if (
@@ -1351,8 +1360,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
     ? {
         ...initial,
         model,
-        thinking: false,
-        search: false,
+        thinking: isThinkingEnabled(settings),
+        search: isSearchEnabled(settings),
         prefix: false,
       }
     : initial
@@ -1455,7 +1464,6 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         const inlineFiles =
           inlineAttachments || fallbackImages?.size
             ? await prepareCustomAttachments(
-                chatConfig.format,
                 prepared.history,
                 question,
                 (id) => loadOriginalFile(sessionId, id),
@@ -1506,7 +1514,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           prepared.history,
           activeQuestion,
           activePrefix,
-          initial.thinking ?? false,
+          reply.thinking ?? false,
           latestReminder,
           inlineFiles
         )
@@ -1528,12 +1536,13 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           max_tokens: requestMaxOutput,
           system: inlineAttachments ? '' : SYSTEM_PROMPT,
           messages,
-          thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
+          thinking: { type: reply.thinking ? 'enabled' : 'disabled' },
           safety_check: SAFETY_CHECK,
-          tools: serverTools(initial.search ?? false),
+          tools: serverTools(reply.search ?? false),
+          ...(chatConfig.format === 'chat' && activePrefix ? { prefix: true } : {}),
           ...(titleRequests.has(controller) ? { title: { enabled: true } } : {}),
         }
-        const events = streamChatMessage(chatConfig, apiKey, body, signal)
+        const events = streamChatMessage(chatConfig, apiKey, body, signal, reasoning)
         const blockIndexes = new Map<number, number>()
         for await (const event of events) {
           receivedContent ||= event.type === 'content_block_start'

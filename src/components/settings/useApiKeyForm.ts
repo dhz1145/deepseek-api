@@ -65,11 +65,11 @@ export const useApiKeyForm = (onSaved?: () => void) => {
     pending.current = controller
     setVerifying(true)
     try {
-      const models = await listChatModels(apiKey, apiBaseUrl, signal, format)
+      const { models, profiles } = await listChatModels(apiKey, apiBaseUrl, signal, format)
       if (signal.aborted) {
         return
       }
-      if (!setApiKey(apiKey, apiBaseUrl, models, format)) {
+      if (!setApiKey(apiKey, apiBaseUrl, models, format, profiles)) {
         throw new Error(t('apiKeyStorageFailed'))
       }
       setValue('')

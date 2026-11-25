@@ -1,3 +1,4 @@
+import { useSettings } from '../settings.js'
 import { ApiError, API_ORIGIN, apiRedirect, getCustomApiBase, request } from './client.js'
 
 /**
@@ -7,6 +8,35 @@ import { ApiError, API_ORIGIN, apiRedirect, getCustomApiBase, request } from './
  * 鉴权都用 Authorization: Bearer。
  */
 const TOOLS_BASE_URL = `${API_ORIGIN}/v1/tools`
+
+// A custom OpenAI-compatible gateway may also serve OpenAI's independent audio endpoints.
+// Preserve the previous DeepSeek-style route only when the standard route is missing.
+const requestAudio = async (
+  customBase: string | null,
+  path: 'asr' | 'tts',
+  init: RequestInit,
+  standardBody: () => BodyInit
+) => {
+  if (customBase && useSettings.getState().chatConfig.format !== 'messages') {
+    try {
+      return await request(`${customBase}/audio/${path === 'asr' ? 'transcriptions' : 'speech'}`, {
+        ...init,
+        credentials: 'omit',
+        body: standardBody(),
+      })
+    } catch (error) {
+      if (
+        customBase === 'https://api.openai.com/v1' ||
+        !(error instanceof ApiError) ||
+        error.code === 'model_not_found' ||
+        (error.status !== 404 && error.status !== 405)
+      ) {
+        throw error
+      }
+    }
+  }
+  return request(`${customBase ? `${customBase}/tools` : TOOLS_BASE_URL}/${path}`, init)
+}
 
 export type TtsVoice = 'stella' | 'tide'
 
@@ -22,13 +52,23 @@ export const transcribe = async (
   const form = new FormData()
   form.append('file', audio, 'recording.wav')
   const customBase = getCustomApiBase(apiKey)
-  const response = await request(`${customBase ? `${customBase}/tools` : TOOLS_BASE_URL}/asr`, {
-    method: 'POST',
-    redirect: apiRedirect(customBase),
-    headers: { Authorization: `Bearer ${apiKey}` },
-    body: form,
-    signal,
-  })
+  const response = await requestAudio(
+    customBase,
+    'asr',
+    {
+      method: 'POST',
+      redirect: apiRedirect(customBase),
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+      signal,
+    },
+    () => {
+      const standard = new FormData()
+      standard.append('file', audio, 'recording.wav')
+      standard.append('model', 'gpt-4o-mini-transcribe')
+      return standard
+    }
+  )
   const raw = await response.text()
   let body: unknown
   try {
@@ -55,14 +95,25 @@ export const synthesize = async (
   signal: AbortSignal
 ): Promise<ReadableStream<Uint8Array>> => {
   const customBase = getCustomApiBase(apiKey)
-  const response = await request(`${customBase ? `${customBase}/tools` : TOOLS_BASE_URL}/tts`, {
-    method: 'POST',
-    redirect: apiRedirect(customBase),
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, voice_id: voice, format: 'pcm', filter_markdown: true }),
-    signal,
-  })
-  if (!response.body) {
+  const response = await requestAudio(
+    customBase,
+    'tts',
+    {
+      method: 'POST',
+      redirect: apiRedirect(customBase),
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, voice_id: voice, format: 'pcm', filter_markdown: true }),
+      signal,
+    },
+    () =>
+      JSON.stringify({
+        model: 'gpt-4o-mini-tts',
+        input: text,
+        voice: voice === 'stella' ? 'shimmer' : 'onyx',
+        response_format: 'pcm',
+      })
+  )
+  if (!response.body || /json|text\//i.test(response.headers.get('Content-Type') ?? '')) {
     throw new ApiError('protocol', await response.text())
   }
   return response.body

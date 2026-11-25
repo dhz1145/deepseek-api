@@ -18,6 +18,8 @@ export type TextCitation = {
   cited_text: string
   /** 恒为空串 */
   encrypted_index: string
+  /** Responses citation end offset in Unicode code points. */
+  end_index?: number
 }
 
 /** 文本块：挂过引用的块之后，后续正文另起新块；同一块内引用按 url 去重 */
@@ -188,6 +190,8 @@ export type CreateMessageRequest = {
   system: string
   messages: MessageParam[]
   thinking: { type: 'enabled' | 'disabled' }
+  /** DeepSeek Chat Completions Beta assistant prefix. */
+  prefix?: true
   tools?: (DeepseekWebSearchTool | DeepseekReadUrlTool)[]
   safety_check?: { level: 'high' }
   title?: { enabled: boolean }

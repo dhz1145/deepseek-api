@@ -1,5 +1,6 @@
-import { DEEP_THINK_EFFORT, type ChatApiFormat } from './chatConfig.js'
+import type { ChatApiFormat } from './chatConfig.js'
 import type {
+  AssistantBlockParam,
   CreateMessageRequest,
   MessageParam,
   MessageUsage,
@@ -27,31 +28,113 @@ const userPart = (format: OpenAIFormat, block: UserBlockParam, deepSeek: boolean
       ? { type: 'image_url', image_url: { url } }
       : { type: 'input_image', image_url: url, detail: 'auto' }
   }
-  return format === 'responses' && 'title' in block
-    ? { type: 'input_file', filename: block.title, file_data: url }
-    : null
+  if (!('title' in block)) {
+    return null
+  }
+  const file = { filename: block.title, file_data: url }
+  return format === 'chat' ? { type: 'file', file } : { type: 'input_file', ...file }
+}
+
+/** Preserve the signed page item that DeepSeek needs to read this link again in later turns. */
+const responseReadLinks = (blocks: AssistantBlockParam[]) => {
+  const links = new Map(
+    blocks.flatMap((block) =>
+      block.type === 'server_tool_use' && block.input.action === 'read_link'
+        ? [[block.id, block.input.url] as const]
+        : []
+    )
+  )
+  return blocks.flatMap((block) => {
+    if (
+      block.type !== 'web_fetch_tool_result' ||
+      block.kind !== 'read_link' ||
+      block.content.type !== 'web_fetch_result' ||
+      !block.signature ||
+      !links.has(block.tool_use_id)
+    ) {
+      return []
+    }
+    const { url, published_at, content } = block.content
+    return [
+      {
+        type: 'web_search_call',
+        id: block.tool_use_id,
+        status: 'completed',
+        kind: 'read_link',
+        action: { type: 'open_page', url: links.get(block.tool_use_id) || url },
+        ...(url ? { page: { url, title: content.title, published_at } } : {}),
+        signature: block.signature,
+      },
+    ]
+  })
 }
 
 export const openAIRequest = (
   format: OpenAIFormat,
   body: CreateMessageRequest,
-  deepSeek: boolean
+  deepSeek: boolean,
+  effort: string | undefined,
+  optional: { summary?: boolean; sources?: boolean } = { summary: true, sources: true }
 ) => {
   type InputMessage = {
     role: MessageParam['role']
     content: string | NonNullable<ReturnType<typeof userPart>>[]
+    prefix?: true
+    reasoning_content?: string
+    server_tool_calls?: unknown[]
   }
-  const messages = body.messages.flatMap<InputMessage>(({ role, content }) => {
+  const messages = body.messages.flatMap<
+    InputMessage | ReturnType<typeof responseReadLinks>[number]
+  >(({ role, content }, index) => {
     if (role === 'latest_reminder') {
       return deepSeek && format === 'chat' ? [{ role, content }] : []
     }
     if (typeof content === 'string') {
       return [{ role, content }]
     }
-    const parts =
-      role === 'assistant'
-        ? content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('')
-        : content.map((block) => userPart(format, block, deepSeek)).filter((part) => part !== null)
+    if (role === 'assistant') {
+      const links = format === 'responses' && deepSeek ? responseReadLinks(content) : []
+      const text = content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('')
+      if (format === 'chat' && deepSeek) {
+        if (body.prefix && index === body.messages.length - 1) {
+          const reasoning = content
+            .flatMap((block) => (block.type === 'thinking' ? [block.thinking] : []))
+            .join('')
+          return [
+            {
+              role,
+              content: text,
+              prefix: true,
+              ...(reasoning && body.thinking.type === 'enabled'
+                ? { reasoning_content: reasoning }
+                : {}),
+            },
+          ]
+        }
+        // The Chat Completions variant groups signed link calls inside the assistant message.
+        const calls = responseReadLinks(content).map(({ action, ...link }, index) => ({
+          ...link,
+          index,
+          type: 'deepseek_read_url',
+          action: { ...action, type: 'read_link' },
+        }))
+        return text || calls.length
+          ? [
+              {
+                role,
+                content: text,
+                ...(calls.length
+                  ? { server_tool_calls: [{ index: 0, reasoning_content: '', calls }] }
+                  : {}),
+              },
+            ]
+          : []
+      }
+      return text ? [...links, { role, content: text }] : links
+    }
+    const parts = content
+      .map((block) => userPart(format, block, deepSeek))
+      .filter((part) => part !== null)
     return parts.length ? [{ role, content: parts }] : []
   })
 
@@ -67,6 +150,8 @@ export const openAIRequest = (
       : {}),
   }
   const thinkingEnabled = body.thinking.type === 'enabled'
+  const selectedEffort = thinkingEnabled ? effort : undefined
+  const includeSummary = !deepSeek && thinkingEnabled && selectedEffort !== 'none' && optional.summary
   if (format === 'chat') {
     return {
       ...common,
@@ -75,9 +160,15 @@ export const openAIRequest = (
         ? {
             max_tokens: body.max_tokens,
             thinking: body.thinking,
-            reasoning_effort: thinkingEnabled ? DEEP_THINK_EFFORT : undefined,
+            reasoning_effort: selectedEffort,
           }
-        : { max_completion_tokens: body.max_tokens }),
+        : {
+            max_completion_tokens: body.max_tokens,
+            reasoning_effort: selectedEffort,
+            ...(body.tools?.some(({ type }) => type === 'deepseek_web_search')
+              ? { web_search_options: {} }
+              : {}),
+          }),
     }
   }
   return {
@@ -85,14 +176,23 @@ export const openAIRequest = (
     input: messages,
     instructions: body.system || undefined,
     max_output_tokens: body.max_tokens,
-    reasoning: deepSeek
-      ? { effort: thinkingEnabled ? DEEP_THINK_EFFORT : 'none' }
-      : undefined,
+    reasoning:
+      deepSeek && !thinkingEnabled
+        ? { effort: 'none' }
+        : selectedEffort || includeSummary
+          ? { effort: selectedEffort, ...(includeSummary ? { summary: 'auto' } : {}) }
+          : undefined,
+    ...(!deepSeek && body.tools?.some(({ type }) => type === 'deepseek_web_search')
+      ? {
+          tools: [{ type: 'web_search' }],
+          ...(optional.sources ? { include: ['web_search_call.action.sources'] } : {}),
+        }
+      : {}),
     store: false,
   }
 }
 
-type OpenAIFrame = {
+export type OpenAIFrame = {
   text?: string
   thinking?: string
   stop?: StopReason
@@ -102,10 +202,10 @@ type OpenAIFrame = {
   error?: { message: string; code?: string }
 }
 
-const record = (value: unknown): Record<string, unknown> =>
+export const record = (value: unknown): Record<string, unknown> =>
   typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {}
 
-const asString = (value: unknown) => (typeof value === 'string' ? value : undefined)
+export const asString = (value: unknown) => (typeof value === 'string' ? value : undefined)
 
 const openAIUsage = (value: unknown, format: OpenAIFormat): MessageUsage | undefined => {
   const usage = record(value)
@@ -133,11 +233,17 @@ const stopReasons: Record<string, StopReason> = {
   content_filter: 'refusal',
 }
 
+export const firstChatChoice = (payload: Record<string, unknown>) =>
+  record(Array.isArray(payload.choices) ? payload.choices[0] : null)
+
 const readChatChunk = (payload: Record<string, unknown>): OpenAIFrame => {
-  const choice = record(Array.isArray(payload.choices) ? payload.choices[0] : null)
-  const delta = record(choice.delta)
+  const choice = firstChatChoice(payload)
+  const delta = record(choice.delta ?? choice.message)
   const finish = asString(choice.finish_reason)
+  const error = record(payload.error)
+  const message = asString(error.message)
   return {
+    error: message ? { message, code: asString(error.code) } : undefined,
     text: asString(delta.content) ?? asString(delta.refusal),
     thinking: asString(delta.reasoning_content) ?? asString(delta.reasoning),
     stop: finish && Object.hasOwn(stopReasons, finish) ? stopReasons[finish] : undefined,

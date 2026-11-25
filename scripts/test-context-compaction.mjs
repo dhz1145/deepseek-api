@@ -64,6 +64,8 @@ globalThis.cancelAnimationFrame = () => {}
 globalThis.__API_ORIGIN__ = 'https://mock.invalid'
 const { ApiError, listChatModels } = await import('../src/services/api/client.ts')
 const { chatConfigFor } = await import('../src/services/api/chatConfig.ts')
+const { modelReasoning, readModelReasoning, restoreModelReasoning } =
+  await import('../src/services/api/modelReasoning.ts')
 const { isOfficialApiAddress, parseApiAddress } = await import('../src/services/api/address.ts')
 const { isContextOverflow } = await import('../src/services/api/errors.ts')
 const {
@@ -89,8 +91,10 @@ const {
 const { readSessionFile } = await import('../src/services/chat/history/schema.ts')
 const { toSessionFile } = await import('../src/services/chat/history/toArchive.ts')
 const { sessions, files, loadFile } = await import(databaseMock)
-const { setApiKey, setChatModel, setFontSize, setPinnedSessions, useSettings } =
-  await import('../src/services/settings.ts')
+const {
+  getReasoningChoice, setApiKey, setChatModel, setFontSize, setPinnedSessions,
+  setReasoningEffort, updateChatModels, useSettings,
+} = await import('../src/services/settings.ts')
 
 test('旧版设置迁到 dsapi 前缀，不覆盖已经保存的新值', () => {
   assert.deepEqual(useSettings.getState().pinnedSessions, ['existing-session'])
@@ -460,7 +464,7 @@ test('Key、地址和协议一起保存；模型由服务返回，不能跨连�
     assert.equal(url, expectedUrl)
     return Response.json({ data: [{ id: 'provider-a' }, { id: 'provider-b' }] })
   })
-  const models = await listChatModels('provider-key', base, newSignal(), 'chat')
+  const { models: models } = await listChatModels('provider-key', base, newSignal(), 'chat')
   assert.equal(requests.mock.calls[0].arguments[1].headers.Authorization, 'Bearer provider-key')
   assert.deepEqual(models, ['provider-a', 'provider-b'])
   assert.ok(setApiKey('provider-key', base, models, 'chat'))
@@ -476,11 +480,11 @@ test('Key、地址和协议一起保存；模型由服务返回，不能跨连�
     apiBaseUrl: base,
     format: 'chat',
   })
-  const anthropicModels = await listChatModels('anthropic-key', base, newSignal(), 'messages')
+  const { models: anthropicModels } = await listChatModels('anthropic-key', base, newSignal(), 'messages')
   assert.equal(requests.mock.calls[1].arguments[1].headers['x-api-key'], 'anthropic-key')
   assert.ok(setApiKey('anthropic-key', base, anthropicModels, 'messages'))
   assert.equal(useSettings.getState().chatModel, null)
-  const officialModels = await listChatModels('official-key', null, newSignal(), 'responses')
+  const { models: officialModels } = await listChatModels('official-key', null, newSignal(), 'responses')
   assert.ok(setApiKey('official-key', null, officialModels, 'responses'))
   assert.equal(useSettings.getState().chatConfig.endpoint, '')
   assert.equal(useSettings.getState().chatConfig.format, 'responses')
@@ -553,7 +557,7 @@ for (const [format, response, partsKey, tokenKey, pathname] of [
       assert.match(JSON.stringify(body[partsKey]), /第二轮问题/)
       if (format === 'messages') {
         assert.deepEqual(body.thinking, { type: 'enabled' })
-        assert.deepEqual(body.output_config, { effort: 'high' })
+        assert.equal(body.output_config, undefined)
         assert.match(JSON.stringify(body[partsKey]), /file-provider/)
       } else {
         assert.match(JSON.stringify(body[partsKey]), /附件正文/)
@@ -665,6 +669,318 @@ for (const [format, path] of [
     assert.equal(answer.status, 'done')
     assert.equal(answer.blocks.find(({ type }) => type === 'thinking').thinking, '推理')
     assert.equal(answer.blocks.find(({ type }) => type === 'text').text, '官方回答')
+  })
+}
+
+test('官方 Chat Completions 显示流式搜索和引用，后续保留阅读链接签名', async (t) => {
+  const previous = useSettings.getState()
+  t.after(() => useSettings.setState(previous))
+  const { buildReplyView } = await import('../src/services/chat/view.ts')
+  const id = seed([])
+  setApiKey('test-key', null, ['picked-model'], 'chat')
+  useSettings.setState({ thinking: false, search: true })
+  const url = 'https://example.test/article'
+  const source = { type: 'url', url, title: '搜索来源', snippet: '网站摘要' }
+  const search = {
+    index: 0, id: 'srvtoolu_s_01', type: 'deepseek_web_search', kind: 'search',
+    action: { type: 'search', queries: ['深度求索'] }, status: 'completed', sources: [source],
+  }
+  const link = {
+    index: 0, id: 'srvtoolu_rl_01', type: 'deepseek_read_url', kind: 'read_link',
+    action: { type: 'read_link', url }, status: 'completed',
+    page: { url, title: '搜索来源', published_at: null }, signature: 'signed-page',
+  }
+  const { signature, ...unsigned } = link
+  const eventFrame = (server_tool_event) => ({ choices: [{ delta: {}, server_tool_event }] })
+  let requests = 0
+  t.mock.method(globalThis, 'fetch', async (endpoint, init) => {
+    assert.equal(endpoint, 'https://mock.invalid/chat/completions')
+    const body = JSON.parse(init.body)
+    assert.deepEqual(body.tools, [{ type: 'deepseek_read_url' }, { type: 'deepseek_web_search' }])
+    if (++requests === 2) {
+      const prior = body.messages.find(({ role }) => role === 'assistant')
+      assert.deepEqual(prior.server_tool_calls, [{ index: 0, reasoning_content: '', calls: [link] }])
+      return openAIStream({ choices: [{ delta: { content: '第二轮' }, finish_reason: 'stop' }] }, '[DONE]')
+    }
+    return openAIStream(
+      eventFrame({ type: 'call_started', step: 0, call: { ...unsigned, status: 'in_progress' } }),
+      eventFrame({ type: 'call_completed', step: 0, call: unsigned }),
+      eventFrame({ type: 'call_started', step: 1, call: { ...search, status: 'in_progress' } }),
+      eventFrame({ type: 'call_completed', step: 1, call: search }),
+      { choices: [{ delta: { content: '🐳甲。乙' } }] },
+      { choices: [{ finish_reason: 'length', delta: {
+        annotations: [{ type: 'url_citation', url_citation: { url, title: '搜索来源', start_index: 0, end_index: 2 } }],
+        server_tool_calls: [
+          { index: 0, calls: [{ ...unsigned, signature }] }, { index: 1, calls: [search] },
+        ],
+      } }] },
+      '[DONE]'
+    )
+  })
+  setDraftText(id, '请阅读这个网页并搜索：' + url)
+  assert.equal(sendMessage(id), true)
+  const first = (await finish(id)).messages.at(-1)
+  assert.equal(first.status, 'done')
+  assert.equal(first.blocks.filter(({ type }) => type === 'web_fetch_tool_result').length, 1)
+  assert.equal(first.blocks.find(({ type }) => type === 'web_fetch_tool_result').signature, signature)
+  const view = buildReplyView(first, false)
+  assert.deepEqual(view.steps.find(({ type }) => type === 'search').queries, ['深度求索'])
+  assert.deepEqual(view.searchResults.map(({ url }) => url), [url])
+  assert.equal(view.answer.markdown, '🐳甲[citation:1]。乙')
+  continueReply(id, first.id)
+  assert.equal(useChatStore.getState().streaming[id], undefined)
+  assert.equal(requests, 1)
+  setDraftText(id, '按刚才阅读的网页再解释一下')
+  assert.equal(sendMessage(id), true)
+  assert.equal((await finish(id)).messages.at(-1).status, 'done')
+  assert.equal(requests, 2)
+})
+
+test('仅官方 DeepSeek Chat Completions 通过 Beta 原生续写，不重写已有答案', async (t) => {
+  const previous = useSettings.getState()
+  t.after(() => useSettings.setState(previous))
+  const id = seed([])
+  setApiKey('test-key', null, ['picked-model'], 'chat')
+  useSettings.setState({ thinking: true, search: false })
+  setReasoningEffort('max')
+  const routes = []
+  t.mock.method(globalThis, 'fetch', async (endpoint, init) => {
+    routes.push(endpoint)
+    const body = JSON.parse(init.body)
+    assert.equal(body.reasoning_effort, 'max')
+    if (routes.length === 1) {
+      assert.equal(body.messages.at(-1).prefix, undefined)
+      return openAIStream(
+        { choices: [{ delta: { reasoning_content: '本轮推理' } }] },
+        { choices: [{ delta: { content: '已经输出，' }, finish_reason: 'length' }] },
+        '[DONE]'
+      )
+    }
+    assert.deepEqual(body.messages.at(-1), {
+      role: 'assistant', content: '已经输出，', prefix: true, reasoning_content: '本轮推理',
+    })
+    return openAIStream({ choices: [{ delta: { content: '这里接着写。' }, finish_reason: 'stop' }] }, '[DONE]')
+  })
+  setDraftText(id, '请写一段文字')
+  assert.equal(sendMessage(id), true)
+  const first = (await finish(id)).messages.at(-1)
+  assert.equal(first.stopReason, 'max_tokens')
+  assert.equal(first.prefix, true)
+  setApiKey('provider-key', 'https://provider.invalid/v1', ['provider-model'], 'chat')
+  continueReply(id, first.id)
+  assert.equal(useChatStore.getState().streaming[id], undefined)
+  setApiKey('test-key', null, ['picked-model'], 'chat')
+  continueReply(id, first.id)
+  const continued = (await finish(id)).messages.at(-1)
+  assert.equal(continued.id, first.id)
+  assert.equal(continued.blocks.filter(({ type }) => type === 'text').map(({ text }) => text).join(''), '已经输出，这里接着写。')
+  assert.deepEqual(routes, ['https://mock.invalid/chat/completions', 'https://mock.invalid/beta/chat/completions'])
+})
+
+test('自定义 Chat Completions 按开关发送 high 与标准搜索，兼容不支持流式的搜索模型', async (t) => {
+  const previous = useSettings.getState()
+  t.after(() => useSettings.setState(previous))
+  const { setSearch, setThinking } = await import('../src/services/settings.ts')
+  const { buildReplyView } = await import('../src/services/chat/view.ts')
+  const id = seed([])
+  setApiKey('provider-key', 'https://provider.invalid/v1', ['chosen-search-model'], 'chat',
+    new Map([['chosen-search-model', { efforts: ['high'] }]]))
+  useSettings.setState({ thinking: true, search: true, chatThinking: false, chatSearch: false })
+  const sent = []
+  const url = 'https://example.test/fact'
+  t.mock.method(globalThis, 'fetch', async (endpoint, init) => {
+    assert.equal(endpoint, 'https://provider.invalid/v1/chat/completions')
+    assert.equal(init.headers.Authorization, 'Bearer provider-key')
+    const body = JSON.parse(init.body)
+    sent.push(body)
+    assert.equal(body.model, 'chosen-search-model')
+    assert.equal(body.tools, undefined)
+    assert.equal(body.messages.at(-1).prefix, undefined)
+    if (sent.length === 1) {
+      assert.equal(body.reasoning_effort, undefined)
+      assert.equal(body.web_search_options, undefined)
+      return openAIStream({ choices: [{ finish_reason: 'stop', delta: { content: '普通回答' } }] }, '[DONE]')
+    }
+    assert.equal(body.reasoning_effort, 'high')
+    assert.deepEqual(body.web_search_options, {})
+    if (body.stream) {
+      return Response.json({ error: { message: 'This model does not support streaming', code: 'unsupported_value', param: 'stream' } }, { status: 400 })
+    }
+    assert.equal(init.headers.Accept, 'application/json')
+    return Response.json({ choices: [{ finish_reason: 'stop', message: {
+      role: 'assistant', content: '事实。', annotations: [{ type: 'url_citation', url_citation: { url, title: '来源', start_index: 0, end_index: 2 } }],
+    } }] })
+  })
+  setDraftText(id, '普通聊天')
+  assert.equal(sendMessage(id), true)
+  assert.equal((await finish(id)).messages.at(-1).status, 'done')
+  setThinking(true)
+  setSearch(true)
+  assert.equal(useSettings.getState().responsesThinking, previous.responsesThinking)
+  assert.equal(useSettings.getState().responsesSearch, previous.responsesSearch)
+  setDraftText(id, '联网核实并深入分析')
+  assert.equal(sendMessage(id), true)
+  const answer = (await finish(id)).messages.at(-1)
+  assert.equal(answer.status, 'done')
+  const view = buildReplyView(answer, false)
+  assert.equal(view.answer.markdown, '事实[citation:1]。')
+  assert.deepEqual(view.sources.map(({ url }) => url), [url])
+  assert.deepEqual(sent.map(({ stream }) => stream), [true, true, false])
+})
+
+test('官方 Responses 展示搜索、Unicode 正文引用，并回传已阅读网页的签名', async (t) => {
+  const previous = useSettings.getState()
+  t.after(() => useSettings.setState(previous))
+  const id = seed([])
+  setApiKey('test-key', null, ['picked-model'], 'responses')
+  useSettings.setState({ thinking: false, search: true })
+  const { buildReplyView } = await import('../src/services/chat/view.ts')
+  const url = 'https://example.test/result'
+  const readLink = {
+    type: 'web_search_call', id: 'srvtoolu_rl_1', status: 'completed', kind: 'read_link',
+    action: { type: 'open_page', url: 'https://example.test/page' },
+    page: { url: 'https://example.test/page', title: '网页', published_at: null },
+    signature: 'opaque-provider-signature',
+  }
+  const search = {
+    type: 'web_search_call', id: 'srvtoolu_s_1', status: 'completed', kind: 'search',
+    action: { type: 'search', queries: ['测试词'], sources: [{ url, title: '搜索来源', snippet: '摘要' }] },
+  }
+  const citation = { type: 'url_citation', url, title: '搜索来源', start_index: 0, end_index: 2 }
+  const answer = { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '🐳甲。乙', annotations: [citation] }] }
+  let requestCount = 0
+  t.mock.method(globalThis, 'fetch', async (endpoint, init) => {
+    assert.equal(endpoint, 'https://mock.invalid/responses')
+    const body = JSON.parse(init.body)
+    assert.deepEqual(body.tools, [{ type: 'deepseek_read_url' }, { type: 'deepseek_web_search' }])
+    if (++requestCount > 1) {
+      assert.deepEqual(body.input.find(({ type }) => type === 'web_search_call'), readLink)
+      assert.equal(body.input.filter(({ type }) => type === 'web_search_call').length, 1)
+      return openAIStream({ type: 'response.output_text.delta', delta: '第二轮' }, { type: 'response.completed' })
+    }
+    return openAIStream(
+      { type: 'response.output_item.added', output_index: 0, item: { ...search, status: 'in_progress' } },
+      { type: 'response.output_item.added', output_index: 1, item: { ...readLink, status: 'in_progress' } },
+      { type: 'response.output_item.done', output_index: 1, item: readLink },
+      { type: 'response.output_item.done', output_index: 0, item: search },
+      { type: 'response.output_text.delta', output_index: 2, content_index: 0, delta: '🐳甲。' },
+      { type: 'response.output_text.annotation.added', output_index: 2, content_index: 0, annotation: citation },
+      { type: 'response.output_text.delta', output_index: 2, content_index: 0, delta: '乙' },
+      { type: 'response.completed', response: { output: [search, readLink, answer] } }
+    )
+  })
+  setDraftText(id, '查找并阅读 https://example.test/page')
+  assert.equal(sendMessage(id), true)
+  const first = (await finish(id)).messages.at(-1)
+  assert.equal(first.status, 'done')
+  assert.equal(first.prefix, false)
+  assert.equal(first.blocks.filter(({ type }) => type === 'web_search_tool_result').length, 1)
+  const view = buildReplyView(first, false)
+  assert.deepEqual(view.steps.find(({ type }) => type === 'search').queries, ['测试词'])
+  assert.deepEqual(view.searchResults.map(({ url }) => url), [url])
+  assert.equal(view.answer.markdown, '🐳甲[citation:1]。乙')
+  assert.equal(view.answer.text, '🐳甲。乙')
+  setDraftText(id, '按照网页继续解释')
+  assert.equal(sendMessage(id), true)
+  assert.equal((await finish(id)).messages.at(-1).status, 'done')
+  assert.equal(requestCount, 2)
+})
+
+test('自定义 Responses 仅按开关发送 high 和搜索，拒绝可选字段时保留实际功能', async (t) => {
+  const previous = useSettings.getState()
+  t.after(() => useSettings.setState(previous))
+  const { setSearch, setThinking } = await import('../src/services/settings.ts')
+  const id = seed([])
+  setApiKey('provider-key', 'https://provider.invalid/v1', ['provider-model'], 'responses',
+    new Map([['provider-model', { efforts: ['high'] }]]))
+  useSettings.setState({ thinking: true, search: true, responsesThinking: false, responsesSearch: false })
+  const requests = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    assert.equal(url, 'https://provider.invalid/v1/responses')
+    const body = JSON.parse(init.body)
+    requests.push(body)
+    const unsupported = (param) => Response.json({ error: {
+      message: 'Unsupported parameter', param, code: 'unsupported_parameter',
+    } }, { status: 400 })
+    if (body.reasoning?.summary) return unsupported('reasoning.summary')
+    if (body.include) return unsupported('include')
+    return openAIStream(
+      { type: 'response.reasoning_summary_text.delta', output_index: 0, delta: '摘要' },
+      { type: 'response.output_item.done', output_index: 0, item: { type: 'reasoning' } },
+      { type: 'response.output_item.done', output_index: 1, item: {
+        type: 'web_search_call', id: 'web-1', status: 'completed', action: { type: 'search', query: '例子' },
+      } },
+      { type: 'response.output_text.delta', output_index: 2, delta: '回答' },
+      { type: 'response.completed' }
+    )
+  })
+  setDraftText(id, '普通文本')
+  assert.equal(sendMessage(id), true)
+  assert.equal((await finish(id)).messages.at(-1).status, 'done')
+  assert.equal(requests[0].tools, undefined)
+  assert.equal(requests[0].reasoning, undefined)
+  setThinking(true)
+  setSearch(true)
+  setDraftText(id, '启用功能')
+  assert.equal(sendMessage(id), true)
+  const answer = (await finish(id)).messages.at(-1)
+  assert.equal(answer.status, 'done')
+  assert.deepEqual(requests.slice(1).map(({ reasoning }) => reasoning), [
+    { effort: 'high', summary: 'auto' }, { effort: 'high' }, { effort: 'high' },
+  ])
+  assert.deepEqual(requests[1].include, ['web_search_call.action.sources'])
+  assert.equal(requests.at(-1).include, undefined)
+  assert.deepEqual(requests.at(-1).tools, [{ type: 'web_search' }])
+  assert.equal(answer.blocks.find(({ type }) => type === 'thinking').thinking, '摘要')
+  assert.deepEqual(answer.blocks.find(({ type }) => type === 'server_tool_use').input.queries, ['例子'])
+  setThinking(false)
+  setSearch(false)
+  assert.equal(useSettings.getState().thinking, true)
+  assert.equal(useSettings.getState().search, true)
+})
+
+for (const format of ['responses', 'chat']) {
+  test(`${format} 官方语音保持 /tools，自定义使用标准音频接口且只在路由缺失时回退`, async (t) => {
+    const previous = useSettings.getState()
+    t.after(() => useSettings.setState(previous))
+    const { synthesize, transcribe } = await import('../src/services/api/speech.ts')
+    const routes = []
+    t.mock.method(globalThis, 'fetch', async (url, init) => {
+      routes.push(url)
+      if (url.endsWith('/audio/transcriptions')) {
+        assert.equal(init.redirect, 'error')
+        assert.equal(init.headers.Authorization, 'Bearer provider-key')
+        assert.equal(init.body.get('file').name, 'recording.wav')
+        assert.equal(init.body.get('model'), 'gpt-4o-mini-transcribe')
+        return Response.json({ text: '语音输入' })
+      }
+      const body = JSON.parse(init.body)
+      if (url.endsWith('/audio/speech')) {
+        assert.deepEqual(body, { model: 'gpt-4o-mini-tts', input: body.input, voice: 'onyx', response_format: 'pcm' })
+        if (body.input === '旧网关') return new Response(null, { status: 404 })
+        if (body.input === '没权限') return new Response(null, { status: 401 })
+      } else {
+        assert.equal(body.voice_id, 'tide')
+        assert.equal(body.format, 'pcm')
+      }
+      return new Response(Uint8Array.of(1, 2), { headers: { 'Content-Type': 'audio/pcm' } })
+    })
+    setApiKey('provider-key', 'https://provider.invalid/v1', ['provider-model'], format)
+    const read = async (key, text) => new Uint8Array(await new Response(await synthesize(key, text, 'tide', newSignal())).arrayBuffer())
+    assert.equal(await transcribe('provider-key', new Blob(['sample'], { type: 'audio/wav' }), newSignal()), '语音输入')
+    assert.deepEqual(await read('provider-key', '正常'), Uint8Array.of(1, 2))
+    assert.deepEqual(await read('provider-key', '旧网关'), Uint8Array.of(1, 2))
+    await assert.rejects(read('provider-key', '没权限'), { status: 401 })
+    setApiKey('test-key', null, ['picked-model'], format)
+    assert.deepEqual(await read('test-key', '官方'), Uint8Array.of(1, 2))
+    assert.deepEqual(routes, [
+      'https://provider.invalid/v1/audio/transcriptions',
+      'https://provider.invalid/v1/audio/speech',
+      'https://provider.invalid/v1/audio/speech',
+      'https://provider.invalid/v1/tools/tts',
+      'https://provider.invalid/v1/audio/speech',
+      'https://mock.invalid/v1/tools/tts',
+    ])
   })
 }
 
@@ -1571,4 +1887,198 @@ test('Base64 保底只适用于自定义 Anthropic 图片的接口缺失，不�
       (error) => error instanceof ApiError && error.status === code
     )
   }
+})
+
+
+for (const format of ['responses', 'chat']) {
+  test(`自定义 ${format} 保留图片与 PDF 内联附件，不调用 Files API`, async (t) => {
+    const previous = useSettings.getState()
+    t.after(() => useSettings.setState(previous))
+    mockFallbackImage(t)
+    const id = seed([])
+    setApiKey('provider-key', 'https://provider.invalid/v1', ['provider-model'], format)
+    const pdf = await PDFDocument.create()
+    pdf.addPage()
+    const bytes = await pdf.save()
+    const call = t.mock.method(globalThis, 'fetch', async (url, init) => {
+      const payload = JSON.parse(init.body)
+      const imageUrl = `data:image/png;base64,${fallbackPng.toString('base64')}`
+      const file = { filename: 'test.pdf', file_data: `data:application/pdf;base64,${Buffer.from(bytes).toString('base64')}` }
+      if (format === 'chat') {
+        assert.equal(url, 'https://provider.invalid/v1/chat/completions')
+        const [image, pdfPart] = payload.messages.at(-1).content
+        assert.deepEqual(image, { type: 'image_url', image_url: { url: imageUrl } })
+        assert.deepEqual(pdfPart, { type: 'file', file })
+        return openAIStream({ choices: [{ finish_reason: 'stop', delta: { content: '已收到附件' } }] }, '[DONE]')
+      }
+      assert.equal(url, 'https://provider.invalid/v1/responses')
+      const [image, pdfPart] = payload.input.at(-1).content
+      assert.deepEqual(image, { type: 'input_image', image_url: imageUrl, detail: 'auto' })
+      assert.deepEqual(pdfPart, { type: 'input_file', ...file })
+      return openAIStream({ type: 'response.output_text.delta', delta: '已收到附件' }, { type: 'response.completed' })
+    })
+    assert.equal(addDraftFiles(id, [fallbackImage('image.png'), new File([bytes], 'test.pdf', { type: 'application/pdf' })], null), null)
+    setDraftText(id, '请分析文件')
+    assert.equal(sendMessage(id), true)
+    assert.equal((await finish(id)).messages.at(-1).status, 'done')
+    assert.equal(call.mock.callCount(), 1)
+  })
+}
+
+test('思考强度按模型与协议列出全部实际档位，不给未知模型猜档位', () => {
+  const profiles = new Map()
+  const base = 'https://provider.invalid/v1'
+  const levels = (format, model, address = base) =>
+    modelReasoning(chatConfigFor(address, format), model, profiles).efforts
+  assert.deepEqual(levels('messages', 'deepseek-flash', null), ['low', 'high', 'max'])
+  assert.deepEqual(levels('responses', 'deepseek-v4-pro', null), ['none', 'low', 'high', 'max'])
+  const gpt6 = ['low', 'medium', 'high', 'xhigh', 'max']
+  for (const format of ['responses', 'chat']) {
+    assert.deepEqual(levels(format, 'openai/gpt-6.2-astra'), gpt6)
+    assert.deepEqual(levels(format, 'gpt-6.1-terra'), ['none', ...gpt6])
+    assert.deepEqual(levels(format, 'gpt-5-mini'), ['minimal', 'low', 'medium', 'high'])
+    assert.deepEqual(levels(format, 'gpt-5.4-mini'), ['none', 'low', 'medium', 'high', 'xhigh'])
+    assert.deepEqual(levels(format, 'grok-4.7'), ['low', 'medium', 'high', 'xhigh'])
+  }
+  assert.deepEqual(levels('chat', 'gpt-5.4-pro'), [])
+  assert.deepEqual(levels('responses', 'gpt-5.4-pro'), ['medium', 'high', 'xhigh'])
+  assert.deepEqual(levels('messages', 'claude-sonnet-4-6'), ['low', 'medium', 'high', 'max'])
+  assert.deepEqual(levels('messages', 'claude-opus-5-5-20260921'), gpt6)
+  assert.deepEqual(levels('chat', 'gemini-3-pro-preview'), ['low', 'high'])
+  assert.deepEqual(levels('chat', 'openai/gpt-oss-120b'), ['low', 'medium', 'high'])
+  assert.deepEqual(levels('chat', 'google/gemini-4-neon'), ['low', 'medium', 'high', 'xhigh'])
+  assert.deepEqual(levels('chat', 'gemini-3-flash-preview'), ['minimal', 'low', 'medium', 'high'])
+  assert.deepEqual(levels('chat', 'glm-5.3'), ['low', 'high', 'max'])
+  assert.deepEqual(levels('messages', 'gpt-6.2-astra'), [])
+  assert.deepEqual(levels('responses', 'gateway-gpt-5.5-plus'), [])
+})
+
+test('读模型接口的档位，优先服务声明；按地址、协议和模型保存选择', async (t) => {
+  const previous = useSettings.getState()
+  t.after(() => useSettings.setState(previous))
+  const base = 'https://reasoning-provider.invalid/v1'
+  const model = 'gpt-6.2-astra'
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    assert.equal(url, `${base}/models`)
+    assert.equal(init.method, 'GET')
+    return Response.json({ data: [
+      { id: model, supported_reasoning_efforts: ['ultra', 'low', 'none', 'low', null, ' invalid'] },
+      { id: 'unknown-alias', reasoning: true },
+    ] })
+  })
+  const { models, profiles } = await listChatModels('demo-key', base, newSignal(), 'responses')
+  setApiKey('demo-key', base, models, 'responses', profiles)
+  const current = () => getReasoningChoice(useSettings.getState())
+  setChatModel(model)
+  assert.deepEqual(current().efforts, ['none', 'low', 'ultra'])
+  assert.equal(current().effort, '')
+  setReasoningEffort('high')
+  assert.equal(current().effort, '')
+  setReasoningEffort('ultra')
+  assert.equal(current().effort, 'ultra')
+  const cache = JSON.parse(storage.get('dsapi:reasoning-profiles'))
+  assert.deepEqual(restoreModelReasoning(cache.profiles).get(model).efforts, ['none', 'low', 'ultra'])
+  assert.equal(Object.values(JSON.parse(storage.get('dsapi:reasoning-effort'))).at(-1), 'ultra')
+  setChatModel('unknown-alias')
+  assert.deepEqual(current().efforts, [])
+  assert.equal(current().effort, '')
+  setChatModel(model)
+  assert.equal(current().effort, 'ultra')
+  setApiKey('demo-key', base, [model], 'chat')
+  assert.equal(current().effort, 'high')
+  setApiKey('demo-key', 'https://other-reasoning-provider.invalid/v1', [model], 'responses')
+  assert.equal(current().effort, 'high')
+  setApiKey('demo-key', base, [model], 'responses', profiles)
+  assert.equal(current().effort, 'ultra')
+  const newProfiles = new Map([[model, { efforts: ['low'] }]])
+  updateChatModels('wrong-key', base, [model], 'responses', newProfiles)
+  assert.equal(current().effort, 'ultra')
+  updateChatModels('demo-key', base, [model], 'responses', newProfiles)
+  assert.equal(current().effort, '')
+  setReasoningEffort('none')
+  assert.equal(current().effort, '')
+})
+
+for (const [format, key, makeResponse] of [
+  ['messages', 'output_config', () => stream('回答')],
+  ['chat', 'reasoning_effort', () => openAIStream({ choices: [{ delta: { content: '回答' }, finish_reason: 'stop' }] }, '[DONE]')],
+  ['responses', 'reasoning', () => openAIStream({ type: 'response.output_text.delta', delta: '回答' }, { type: 'response.completed' })],
+]) {
+  test(`${format} 发送、重新生成使用所选档位，关闭后忽略保存的档位`, async (t) => {
+    const previous = useSettings.getState()
+    t.after(() => useSettings.setState(previous))
+    const { setSearch, setThinking } = await import('../src/services/settings.ts')
+    const model = 'reasoning-test-model'
+    const profile = format === 'messages'
+      ? readModelReasoning({ capabilities: {
+          effort: { supported: true, low: { supported: true }, high: { supported: true }, xhigh: { supported: true }, max: { supported: false } },
+          thinking: { types: { adaptive: { supported: true } } },
+        } }, format)
+      : { efforts: ['none', 'low', 'high', 'xhigh'] }
+    const base = format === 'messages' ? 'https://api.anthropic.com/v1' : 'https://reasoning-provider.invalid/v1'
+    const id = seed([])
+    setApiKey('demo-key', base, [model], format, new Map([[model, profile]]))
+    setThinking(true)
+    setSearch(false)
+    setReasoningEffort('xhigh')
+    const bodies = []
+    t.mock.method(globalThis, 'fetch', async (url, init) => {
+      assert.equal(url, base + ({ messages: '/messages', chat: '/chat/completions', responses: '/responses' })[format])
+      bodies.push(JSON.parse(init.body))
+      return makeResponse()
+    })
+    const effort = (body) => typeof body[key] === 'string' ? body[key] : body[key]?.effort
+    setDraftText(id, '测试思考强度')
+    assert.equal(sendMessage(id), true)
+    assert.equal((await finish(id)).messages.at(-1).status, 'done')
+    assert.equal(effort(bodies.at(-1)), 'xhigh')
+    if (format === 'messages') {
+      assert.deepEqual(bodies.at(-1).thinking, { type: 'adaptive' })
+      assert.equal(bodies.at(-1).safety_check, undefined)
+    }
+    setReasoningEffort('low')
+    regenerateReply(id)
+    await finish(id)
+    assert.equal(effort(bodies.at(-1)), 'low')
+    setThinking(false)
+    regenerateReply(id)
+    await finish(id)
+    assert.equal(bodies.at(-1)[key], undefined)
+    assert.equal(getReasoningChoice(useSettings.getState()).effort, 'low')
+    setThinking(true)
+    setReasoningEffort(format === 'messages' ? '' : 'none')
+    regenerateReply(id)
+    await finish(id)
+    assert.equal(effort(bodies.at(-1)), format === 'messages' ? undefined : 'none')
+    assert.equal(bodies.at(-1).reasoning?.summary, undefined)
+    setReasoningEffort('')
+    regenerateReply(id)
+    await finish(id)
+    assert.equal(effort(bodies.at(-1)), undefined)
+    if (format === 'responses') {
+      assert.deepEqual(bodies.at(-1).reasoning, { summary: 'auto' })
+    }
+  })
+}
+
+test('网关拒绝所选档位时不静默降档', async (t) => {
+  const previous = useSettings.getState()
+  t.after(() => useSettings.setState(previous))
+  const { setThinking, setSearch } = await import('../src/services/settings.ts')
+  const id = seed([])
+  setApiKey('demo-key', 'https://reasoning-provider.invalid/v1', ['gpt-5.4'], 'responses')
+  setThinking(true)
+  setSearch(false)
+  setReasoningEffort('xhigh')
+  const fetch = t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    assert.equal(JSON.parse(init.body).reasoning.effort, 'xhigh')
+    return Response.json({ error: {
+      message: 'Unsupported reasoning.effort: xhigh', code: 'unsupported_value', param: 'reasoning.effort',
+    } }, { status: 400 })
+  })
+  setDraftText(id, '测试不支持的档位')
+  assert.equal(sendMessage(id), true)
+  const session = await finish(id)
+  assert.notEqual(session.messages.at(-1).status, 'done')
+  assert.equal(fetch.mock.callCount(), 1)
 })

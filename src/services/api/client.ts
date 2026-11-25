@@ -4,12 +4,14 @@ import { useSettings } from '../settings.js'
 import {
   CHAT_API_PATHS,
   DEFAULT_CHAT_FORMAT,
-  DEEP_THINK_EFFORT,
   type ChatApiFormat,
   type ChatConfig,
 } from './chatConfig.js'
-import { openAIRequest, readOpenAIFrame } from './openaiChat.js'
+import { createCompletionsStream } from './completionsStream.js'
+import { readModelReasoning, type ChatReasoning, type ModelReasoningMap } from './modelReasoning.js'
+import { firstChatChoice, openAIRequest, readOpenAIFrame, record } from './openaiChat.js'
 import { readMessageEvent } from './parseEvent.js'
+import { createResponsesStream } from './responsesStream.js'
 import { readServerSentEvents } from './sse.js'
 import { fetchApi } from './transport.js'
 import type {
@@ -49,7 +51,8 @@ export class ApiError extends Error {
     readonly kind: ApiErrorKind,
     message: string | TranslationMessage,
     readonly status?: number,
-    readonly code?: string
+    readonly code?: string,
+    readonly param?: string
   ) {
     super(typeof message === 'string' ? message : translate(message.key, message.params))
     this.name = 'ApiError'
@@ -71,16 +74,18 @@ const readErrorResponse = async (
   const text = await response.text().catch(() => '')
   let message = text || fallback
   let code: string | undefined
+  let param: string | undefined
   try {
     const body: unknown = JSON.parse(text)
     if (isErrorBody(body)) {
       message = body.error.message
       code = typeof body.error.code === 'string' ? body.error.code : undefined
+      param = typeof body.error.param === 'string' ? body.error.param : undefined
     }
   } catch {
     // 非 JSON 响应体直接展示原文
   }
-  return new ApiError(kind, message, response.status, code)
+  return new ApiError(kind, message, response.status, code, param)
 }
 
 export const request = async (url: string, init: RequestInit): Promise<Response> => {
@@ -128,9 +133,10 @@ export const listChatModels = async (
   customBase: string | null,
   signal?: AbortSignal,
   format: ChatApiFormat = DEFAULT_CHAT_FORMAT
-): Promise<ChatModel[]> => {
+): Promise<{ models: ChatModel[]; profiles: ModelReasoningMap }> => {
   const url = `${customBase ?? API_ORIGIN}/models`
   const models = new Set<ChatModel>()
+  const profiles: ModelReasoningMap = new Map()
   const cursors = new Set<string>()
   let cursor = ''
   for (;;) {
@@ -144,7 +150,7 @@ export const listChatModels = async (
       signal,
     })
     const payload = (await response.json().catch(() => null)) as {
-      data?: ({ id?: unknown } | null)[]
+      data?: (Record<string, unknown> | null)[]
       has_more?: unknown
       last_id?: unknown
     } | null
@@ -154,10 +160,14 @@ export const listChatModels = async (
     for (const entry of payload.data) {
       if (typeof entry?.id === 'string' && entry.id.trim()) {
         models.add(entry.id)
+        const profile = readModelReasoning(entry, format)
+        if (profile) {
+          profiles.set(entry.id, profile)
+        }
       }
     }
     if (!customBase || payload.has_more !== true) {
-      return [...models]
+      return { models: [...models], profiles }
     }
     if (typeof payload.last_id !== 'string' || !payload.last_id || cursors.has(payload.last_id)) {
       throw new ApiError('protocol', { key: 'apiModelInvalidList' })
@@ -224,9 +234,27 @@ const openMessageStream = (
   apiKey: string,
   customBase: string | null,
   body: CreateMessageRequest,
-  signal: AbortSignal
-) =>
-  request(`${customBase ?? ANTHROPIC_BASE_URL}/messages`, {
+  signal: AbortSignal,
+  reasoning: ChatReasoning
+) => {
+  const enabled = body.thinking.type === 'enabled'
+  const thinking = (() => {
+    if (enabled && reasoning.messagesThinking === 'adaptive') {
+      return { type: 'adaptive' }
+    }
+    if (enabled && reasoning.messagesThinking === 'budget') {
+      return body.max_tokens > 1024
+        ? { type: 'enabled', budget_tokens: Math.min(2048, body.max_tokens - 1) }
+        : undefined
+    }
+    return !enabled && reasoning.canDisableThinking === false ? undefined : body.thinking
+  })()
+  // The native Claude endpoint does not accept DeepSeek's optional request extensions.
+  const payload =
+    customBase === 'https://api.anthropic.com/v1'
+      ? { ...body, safety_check: undefined, title: undefined, tools: undefined, prefix: undefined }
+      : body
+  return request(`${customBase ?? ANTHROPIC_BASE_URL}/messages`, {
     method: 'POST',
     redirect: apiRedirect(customBase),
     headers: {
@@ -235,12 +263,14 @@ const openMessageStream = (
       Accept: 'text/event-stream',
     },
     body: JSON.stringify({
-      ...body,
-      ...(body.thinking.type === 'enabled' ? { output_config: { effort: DEEP_THINK_EFFORT } } : {}),
+      ...payload,
+      thinking,
+      ...(enabled && reasoning.effort ? { output_config: { effort: reasoning.effort } } : {}),
       stream: true,
     }),
     signal,
   })
+}
 
 const withDeepSeekExtensionsFallback = (
   body: CreateMessageRequest,
@@ -267,10 +297,11 @@ async function* streamMessage(
   apiKey: string,
   customBase: string | null,
   body: CreateMessageRequest,
-  signal: AbortSignal
+  signal: AbortSignal,
+  reasoning: ChatReasoning
 ) {
   const response = await withDeepSeekExtensionsFallback(body, (requestBody) =>
-    openMessageStream(apiKey, customBase, requestBody, signal)
+    openMessageStream(apiKey, customBase, requestBody, signal, reasoning)
   )
   yield* readAnthropicStream(response, signal)
 }
@@ -339,14 +370,21 @@ export const streamChatMessage = (
   config: ChatConfig,
   apiKey: string,
   body: CreateMessageRequest,
-  signal: AbortSignal
+  signal: AbortSignal,
+  reasoning: ChatReasoning = {}
 ) => {
   if (config.format === 'messages') {
     const base = config.endpoint ? config.endpoint.slice(0, -CHAT_API_PATHS.messages.length) : null
-    return streamMessage(apiKey, base, body, signal)
+    return streamMessage(apiKey, base, body, signal, reasoning)
   }
-  const endpoint = config.endpoint || `${API_ORIGIN}${CHAT_API_PATHS[config.format]}`
-  return streamCompatibleMessage(endpoint, config.format, apiKey, body, signal, !config.endpoint)
+  const endpoint =
+    config.endpoint ||
+    `${API_ORIGIN}${
+      config.format === 'chat' && body.prefix ? '/beta' : ''
+    }${CHAT_API_PATHS[config.format]}`
+  return streamCompatibleMessage(
+    endpoint, config.format, apiKey, body, signal, !config.endpoint, reasoning
+  )
 }
 
 async function* streamCompatibleMessage(
@@ -355,32 +393,105 @@ async function* streamCompatibleMessage(
   apiKey: string,
   body: CreateMessageRequest,
   signal: AbortSignal,
-  deepSeek: boolean
+  deepSeek: boolean,
+  reasoning: ChatReasoning
 ): AsyncGenerator<MessageStreamEvent> {
   throwIfAborted(signal)
+  const optional = {
+    summary: body.thinking.type === 'enabled',
+    sources: body.tools?.some(({ type }) => type === 'deepseek_web_search'),
+  }
+  let stream = true
   const send = (requestBody: CreateMessageRequest) =>
     request(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
+        Accept: stream ? 'text/event-stream' : 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify(openAIRequest(format, requestBody, deepSeek)),
+      body: JSON.stringify({ ...openAIRequest(format, requestBody, deepSeek, reasoning.effort, optional), stream }),
       credentials: 'omit',
       redirect: 'error',
       signal,
     })
-  const response = deepSeek ? await withDeepSeekExtensionsFallback(body, send) : await send(body)
-  let block: 'text' | 'thinking' | undefined
-  let index = -1
+  const open = async () => {
+    if (deepSeek) {
+      return withDeepSeekExtensionsFallback(body, send)
+    }
+    for (;;) {
+      try {
+        return await send(body)
+      } catch (error) {
+        // Some search-only models support Chat Completions but cannot stream their search results.
+        if (
+          format === 'chat' &&
+          stream &&
+          optional.sources &&
+          error instanceof ApiError &&
+          (error.status === 400 || error.status === 422) &&
+          /unsupported|not supported|does not support/i.test(
+            `${error.code ?? ''} ${error.message}`
+          ) &&
+          (error.param === 'stream' || /\bstream(?:ing)?\b/i.test(error.message))
+        ) {
+          stream = false
+          continue
+        }
+        if (
+          format !== 'responses' ||
+          !(error instanceof ApiError) ||
+          (error.status !== 400 && error.status !== 422) ||
+          !(
+            /^(?:unsupported|unknown)_/i.test(error.code ?? '') ||
+            /unsupported|not supported|unknown|unrecognized|extra inputs/i.test(error.message)
+          )
+        ) {
+          throw error
+        }
+        // Remove optional metadata only, never downgrade an explicitly requested effort.
+        if (
+          optional.summary &&
+          (error.param === 'reasoning.summary' || /\breasoning\.summary\b/i.test(error.message))
+        ) {
+          optional.summary = false
+        } else if (
+          optional.sources &&
+          (error.param === 'include' || /\bweb_search_call\.action\.sources\b/.test(error.message))
+        ) {
+          optional.sources = false
+        } else {
+          throw error
+        }
+      }
+    }
+  }
+  const response = await open()
+  const responses = format === 'responses' ? createResponsesStream() : undefined
+  const completions = format === 'chat' ? createCompletionsStream() : undefined
   let stop: StopReason | undefined
   let usage: MessageUsage | undefined
   let title: string | undefined
   let complete = false
-  for await (const packet of readStreamPayloads(response, signal)) {
+  let hasOutput = false
+  const packets = async function* () {
+    if (
+      completions &&
+      response.headers.get('Content-Type')?.toLowerCase().includes('application/json')
+    ) {
+      const payload: unknown = await response.json().catch(() => null)
+      const body = record(payload)
+      if (firstChatChoice(body).message || body.error) {
+        yield { payload, eventName: '', data: '', done: false } as const
+        return
+      }
+      throw new ApiError('protocol', '')
+    }
+    yield* readStreamPayloads(response, signal)
+  }
+  for await (const packet of packets()) {
     if (packet.done) {
-      complete = format === 'chat' && (index >= 0 || stop !== undefined)
+      complete = format === 'chat' && (hasOutput || stop !== undefined)
       break
     }
     const frame = readOpenAIFrame(format, packet.payload)
@@ -390,34 +501,12 @@ async function* streamCompatibleMessage(
     if (packet.eventName === 'error') {
       throw new ApiError('stream', packet.data)
     }
-    const deltas = [
-      ['thinking', frame.thinking],
-      ['text', frame.text],
-    ] as const
-    for (const [type, delta] of deltas) {
-      if (!delta) {
-        continue
-      }
-      if (block !== type) {
-        if (block) {
-          yield { type: 'content_block_stop', index }
-        }
-        block = type
-        index += 1
-        yield {
-          type: 'content_block_start',
-          index,
-          content_block:
-            type === 'text' ? { type, text: '' } : { type, thinking: '', signature: '' },
-        }
-      }
-      yield {
-        type: 'content_block_delta',
-        index,
-        delta:
-          type === 'text'
-            ? { type: 'text_delta', text: delta }
-            : { type: 'thinking_delta', thinking: delta },
+    if (responses) {
+      yield* responses(packet.payload, frame.thinking)
+    } else if (completions) {
+      for (const event of completions.chunk(packet.payload, frame)) {
+        hasOutput ||= event.type === 'content_block_start'
+        yield event
       }
     }
     stop = frame.stop ?? stop
@@ -431,8 +520,8 @@ async function* streamCompatibleMessage(
   if (!complete && !(format === 'chat' && stop)) {
     throw new ApiError('interrupted', '')
   }
-  if (block) {
-    yield { type: 'content_block_stop', index }
+  if (completions) {
+    yield* completions.finish()
   }
   yield {
     type: 'message_delta',

@@ -10,6 +10,7 @@ import {
   IconWarningOutline16,
 } from '../base/icons.js'
 import { describeReply } from '../../services/chat/describe.js'
+import { supportsPrefix } from '../../services/api/chatConfig.js'
 import { canContinueReply } from '../../services/chat/reply.js'
 import { continueReply, regenerateReply } from '../../services/chat/store.js'
 import {
@@ -65,8 +66,11 @@ export const AssistantMessage = memo(function AssistantMessage({
     Boolean(state.chatConfig.endpoint && state.chatConfig.format !== 'messages')
   )
   const format = useSettings((state) => state.chatConfig.format)
+  const canContinue = useSettings((state) => supportsPrefix(state.chatConfig))
   const canReadAloud = useSettings((state) => Boolean(state.apiKey))
   const view = useReplyView(message, streaming)
+  const searchResults =
+    format === 'chat' && !view.searchResults.length ? view.sources : view.searchResults
   const panelEntry = useSearchPanel((state) => state.entry)
   const notice = streaming ? null : describeReply(message)
   // 安全拒绝：已下发的思考与正文按协议丢弃，只显示模板答复。
@@ -114,7 +118,6 @@ export const AssistantMessage = memo(function AssistantMessage({
       android &&
       wasStreaming.current &&
       !streaming &&
-      !customEndpoint &&
       isLast &&
       responseText &&
       message.stopReason === 'end_turn' &&
@@ -123,7 +126,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       toggleReadAloud(message.id, responseText, (error) => showToast(describeReadAloudError(error)))
     }
     wasStreaming.current = streaming
-  }, [customEndpoint, isLast, message.id, message.stopReason, responseText, streaming])
+  }, [isLast, message.id, message.stopReason, responseText, streaming])
   const waiting =
     streaming && view.steps.length === 0 && !view.answer && (android || !message.thinking)
   const summaryEntry = `${message.id}-summary`
@@ -306,26 +309,25 @@ export const AssistantMessage = memo(function AssistantMessage({
           ))}
         </div>
       ) : null}
-      {!streaming && !refused && view.searchResults.length > 0 ? (
+      {!streaming && !refused && searchResults.length > 0 ? (
         <div
           className={clsx(styles.summary, panelEntry === summaryEntry && styles.summaryActive)}
           role="button"
           tabIndex={0}
           aria-expanded={panelEntry === summaryEntry}
-          onClick={() => toggleSearchPanel(summaryEntry, view.searchResults)}
+          onClick={() => toggleSearchPanel(summaryEntry, searchResults)}
           onKeyDown={(event) => {
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault()
-              toggleSearchPanel(summaryEntry, view.searchResults)
+              toggleSearchPanel(summaryEntry, searchResults)
             }
           }}
         >
-          <SiteThumbnails sources={view.searchResults} />
+          <SiteThumbnails sources={searchResults} />
           <span>
-            {t(
-              view.searchResults.length === 1 ? 'messageSearchSummary' : 'messageSearchSummaries',
-              { count: view.searchResults.length }
-            )}
+            {t(searchResults.length === 1 ? 'messageSearchSummary' : 'messageSearchSummaries', {
+              count: searchResults.length,
+            })}
           </span>
         </div>
       ) : null}
@@ -361,7 +363,7 @@ export const AssistantMessage = memo(function AssistantMessage({
               }}
             />
           </div>
-          {isLast && !customEndpoint && format === 'messages' && canContinueReply(message) ? (
+          {isLast && !customEndpoint && canContinue && canContinueReply(message) ? (
             <Button
               variant="outlined"
               size="s"

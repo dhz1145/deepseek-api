@@ -157,7 +157,7 @@ class SourceRegistry {
 
 /**
  * 文本块拼成一份 markdown：服务端在挂过引用的块之后另起新块，引用位置即块尾。
- * 引用之后的空白（含换行）仍留在被引用的块里，所以 [citation:N] 插在块尾空白之前。
+ * Messages 引用插在块尾空白之前；Responses 引用按服务端给出的字符偏移插入。
  */
 const joinTextBlocks = (
   blocks: { text: string; citations?: TextCitation[] }[],
@@ -167,19 +167,35 @@ const joinTextBlocks = (
   let text = ''
   for (const block of blocks) {
     text += block.text
-    const indexes = new Set<number>()
-    for (const citation of block.citations ?? []) {
+    if (!block.citations?.length) {
+      markdown += block.text
+      continue
+    }
+    const offsets = new Map<number, Set<number>>()
+    const codePoints = block.citations.some(({ end_index }) => end_index !== undefined)
+      ? Array.from(block.text)
+      : undefined
+    for (const citation of block.citations) {
       const source = registry.add(citation.url, citation.title, null)
       if (source) {
+        const offset =
+          codePoints && citation.end_index !== undefined
+            ? codePoints.slice(0, citation.end_index).join('').length
+            : block.text.trimEnd().length
+        const indexes = offsets.get(offset) ?? new Set<number>()
         indexes.add(source.index)
+        offsets.set(offset, indexes)
       }
     }
-    const body = indexes.size > 0 ? block.text.trimEnd() : block.text
-    markdown += body
-    for (const index of indexes) {
-      markdown += `[citation:${index}]`
+    let cursor = 0
+    for (const [offset, indexes] of [...offsets].sort(([a], [b]) => a - b)) {
+      markdown += block.text.slice(cursor, offset)
+      for (const index of indexes) {
+        markdown += `[citation:${index}]`
+      }
+      cursor = offset
     }
-    markdown += block.text.slice(body.length)
+    markdown += block.text.slice(cursor)
   }
   return { markdown, text }
 }

@@ -1,6 +1,5 @@
 import { throwIfAborted } from '../../utils/abort.js'
 import { readBlobBuffer } from '../../utils/blob.js'
-import type { ChatApiFormat } from '../api/chatConfig.js'
 import { ApiError } from '../api/client.js'
 import type { InlineFileBlockParam, TextBlockParam, UserBlockParam } from '../api/types.js'
 import { getFileExt } from '../attachments.js'
@@ -24,7 +23,6 @@ const toBase64 = async (blob: Blob, signal: AbortSignal) => {
 }
 
 const toInlineBlock = async (
-  format: ChatApiFormat,
   file: FileAttachment,
   blob: Blob,
   signal: AbortSignal,
@@ -46,7 +44,7 @@ const toInlineBlock = async (
     return undefined
   }
   const extension = getFileExt(file.name)
-  if (extension === 'pdf' && format !== 'chat') {
+  if (extension === 'pdf') {
     return {
       type: 'document',
       title: file.name,
@@ -63,7 +61,6 @@ const toInlineBlock = async (
 }
 
 export const prepareCustomAttachments = async (
-  format: ChatApiFormat,
   history: Message[],
   question: UserMessage,
   loadFile: (id: string) => Promise<Blob | undefined>,
@@ -83,7 +80,7 @@ export const prepareCustomAttachments = async (
       const blob = await loadFile(file.id)
       throwIfAborted(signal)
       const part = blob
-        ? await toInlineBlock(format, file, blob, signal, fallbackImageIds !== undefined)
+        ? await toInlineBlock(file, blob, signal, fallbackImageIds !== undefined)
         : undefined
       if (part) {
         blocks.push(part)

@@ -16,6 +16,9 @@ export const CHAT_API_PATHS: Record<ChatApiFormat, string> = {
 export const DEFAULT_CHAT_FORMAT: ChatApiFormat = 'messages'
 export const DEEP_THINK_EFFORT = 'high'
 
+export const supportsPrefix = ({ endpoint, format }: ChatConfig) =>
+  format === 'messages' || (format === 'chat' && !endpoint)
+
 export const isChatApiFormat = (value: unknown): value is ChatApiFormat =>
   value === 'messages' || value === 'chat' || value === 'responses'
 
