@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "entries": [
+    {
+      "baseUrl": "https://ovone.ai/v1",
+      "format": "messages",
+      "model": "deepseek-v4.1-flash",
+      "efforts": ["low", "high", "max"]
+    },
+    {
+      "baseUrl": "https://ovone.ai/v1",
+      "format": "messages",
+      "model": "deepseek-v4.1-flash-1017",
+      "efforts": ["low", "high", "max"]
+    }
+  ]
+}

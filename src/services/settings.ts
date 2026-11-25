@@ -16,6 +16,13 @@ import {
   type ChatReasoning,
   type ModelReasoningMap,
 } from './api/modelReasoning.js'
+import {
+  bundledReasoningAliases,
+  fetchReasoningAliases,
+  readReasoningAliases,
+  reasoningAliasKey,
+  type ReasoningAliases,
+} from './api/reasoningAliases.js'
 import type { TtsVoice } from './api/speech.js'
 import type { ChatModel } from './api/types.js'
 import { normalizeLocation, type UserLocation } from './location.js'
@@ -38,6 +45,7 @@ type Settings = {
   chatModel: ChatModel | null
   chatModels: ChatModel[] | null
   reasoningProfiles: ModelReasoningMap
+  reasoningAliases: ReasoningAliases
   reasoningPreferences: Record<string, string>
   chatConfig: ChatConfig
   accountProfile: AccountProfile
@@ -63,6 +71,7 @@ const KEYS = {
   apiKey: 'chat-demo:api-key',
   chatModel: 'dsapi:chat-model',
   reasoningProfiles: 'dsapi:reasoning-profiles',
+  reasoningAliases: 'dsapi:reasoning-aliases',
   reasoningPreferences: 'dsapi:reasoning-effort',
   accountProfile: 'dsapi:account-profile',
   locale: 'chat-demo:locale',
@@ -309,6 +318,7 @@ export const useSettings = create<Settings>(() => {
     reasoningProfiles: credentials.apiKey
       ? readReasoningProfiles(credentials.chatConfig)
       : new Map(),
+    reasoningAliases: readReasoningAliases(read(KEYS.reasoningAliases)) ?? bundledReasoningAliases,
     reasoningPreferences: readReasoningPreferences(),
     locale: resolveLocale(initialLocalePreference()),
     localePreference: initialLocalePreference(),
@@ -448,10 +458,32 @@ export const setChatModel = (chatModel: ChatModel) => {
   }
 }
 
+export const refreshReasoningAliases = async (signal: AbortSignal) => {
+  try {
+    const url = android?.reasoningAliasesUrl?.()
+    if (!url) {
+      return
+    }
+    const text = await fetchReasoningAliases(url, signal)
+    const entries = readReasoningAliases(text)
+    if (text && entries && !signal.aborted) {
+      write(KEYS.reasoningAliases, text)
+      useSettings.setState({ reasoningAliases: entries })
+    }
+  } catch {
+    // The bundled or previously cached entries remain available offline.
+  }
+}
+
 export const getReasoningChoice = (state: Settings, model = state.chatModel) => {
-  const { chatConfig, reasoningProfiles, reasoningPreferences } = state
+  const { chatConfig, reasoningProfiles, reasoningAliases, reasoningPreferences } = state
   const profile = model
-    ? modelReasoning(chatConfig, model, reasoningProfiles)
+    ? modelReasoning(
+        chatConfig,
+        model,
+        reasoningProfiles,
+        reasoningAliases.get(reasoningAliasKey(chatConfig, model))
+      )
     : { efforts: [], messagesThinking: undefined, canDisableThinking: undefined }
   const effort = resolveReasoningEffort(
     profile.efforts,

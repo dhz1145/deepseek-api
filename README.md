@@ -93,6 +93,12 @@ v0.7.6 起，Android 可以直接从本项目的 R2 镜像检查和下载更新�
 
 未配置自动同步时，可用 `python scripts/build-update-mirror.py <输出目录>` 生成与已发布正式版一致的镜像文件，然后手动上传到 R2 的 `updates/` 下。先上传 APK 并验证公网下载内容，再上传 `latest.json`；不要覆盖同版本 APK。
 
+### 思考档位别名表
+
+优先使用网关声明的档位。网关未声明时，可以为同一个请求地址、协议和完整模型 ID 补充档位。别名表只影响档位选项，不会替换聊天请求里的模型 ID，也不会向镜像发送 API Key。
+
+维护 `src/services/api/reasoning-aliases.json`。每条记录填写 `baseUrl`、`format`（`messages` / `chat` / `responses`）、`model` 和 `efforts`；空的 `efforts` 可显式禁用该匹配的档位。配置 R2 自动同步后，正式发布会一并上传此表。只更新别名时，把同一个 JSON 单独上传到 R2 的 `updates/reasoning-aliases.json` 即可，无需重新发布 APK。Android 启动时在后台读取，读不到或文件无效时用上次有效缓存或内置表。
+
 ### 低版本 Android 回归
 
 在 Android Studio 中启动 API 29 或 API 30 模拟器，保留系统镜像预装的 WebView，安装 Debug APK 并保持 API Key 未配置。将下列命令中的序列号换成 `adb devices` 显示的模拟器序列号。

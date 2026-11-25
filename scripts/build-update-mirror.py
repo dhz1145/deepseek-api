@@ -1,13 +1,15 @@
-"""Create a Pages artifact using only this repository's latest stable APK."""
+"""Build this repository's stable APK mirror and public model-alias catalog."""
 
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 REPOSITORY = "dhz1145/deepseek-api"
+ROOT = Path(__file__).resolve().parents[1]
 TAG = re.compile(r"v(?:0|[1-9][0-9]{0,8})(?:\.(?:0|[1-9][0-9]{0,8})){2}")
 MAX_APK = 256 * 1024 * 1024
 
@@ -41,7 +43,7 @@ def main(site):
     name, manifest = release_asset(release)
     # Pages identifies deployments by commit SHA. Do not deploy an older release
     # from the commit reserved for a newer APK before that release is published.
-    source_version = json.loads((Path(__file__).resolve().parents[1] / "package.json").read_text(encoding="utf-8"))["version"]
+    source_version = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
     if manifest["tag"] != f"v{source_version}":
         raise ValueError(f"Workflow source v{source_version} does not match latest Release {manifest['tag']}")
     updates = site / "updates"
@@ -59,6 +61,7 @@ def main(site):
     if apk.stat().st_size != manifest["size"] or digest != manifest["sha256"]:
         raise ValueError("Downloaded APK does not match the Release asset")
     (updates / "latest.json").write_text(json.dumps(manifest, separators=(",", ":")) + "\n", encoding="utf-8")
+    shutil.copyfile(ROOT / "src/services/api/reasoning-aliases.json", updates / "reasoning-aliases.json")
     (site / "index.html").write_text(
         '<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'

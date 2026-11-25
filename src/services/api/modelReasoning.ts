@@ -10,16 +10,17 @@ const DEEPSEEK = ['low', 'high', 'max'] as const
 type MessagesThinking = 'adaptive' | 'budget'
 export type ModelReasoning = {
   efforts?: readonly string[]
+  canonicalId?: string
   messagesThinking?: MessagesThinking
   canDisableThinking?: false
 }
-export type ChatReasoning = Omit<ModelReasoning, 'efforts'> & { effort?: string }
+export type ChatReasoning = Omit<ModelReasoning, 'efforts' | 'canonicalId'> & { effort?: string }
 export type ModelReasoningMap = Map<string, ModelReasoning>
 
 const object = (value: unknown): Record<string, unknown> =>
   typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {}
 
-const effortList = (value: unknown): string[] | undefined => {
+export const readEffortList = (value: unknown): string[] | undefined => {
   if (!Array.isArray(value)) {
     return undefined
   }
@@ -35,21 +36,26 @@ const effortList = (value: unknown): string[] | undefined => {
   return [...standard, ...values].slice(0, 24)
 }
 
+const modelId = (value: unknown) =>
+  typeof value === 'string' && /^[a-z0-9][a-z0-9_./:@-]{0,199}$/i.test(value) ? value : undefined
+
 export const readModelReasoning = (
   entry: Record<string, unknown>,
   format: ChatApiFormat
 ): ModelReasoning | undefined => {
   // Explicit gateway extensions only: neither field is required by OpenAI's Models API.
   const declared =
-    effortList(entry.supported_reasoning_efforts) ?? effortList(entry.reasoning_efforts)
+    readEffortList(entry.supported_reasoning_efforts) ?? readEffortList(entry.reasoning_efforts)
+  const canonicalId = modelId(entry.canonical_id) ?? modelId(entry.canonical_slug)
   if (format !== 'messages') {
-    return declared ? { efforts: declared } : undefined
+    return declared || canonicalId ? { efforts: declared, canonicalId } : undefined
   }
   // Anthropic Models API: capabilities.effort.<level>.supported and thinking.types.
   const capabilities = object(entry.capabilities)
   const effort = object(capabilities.effort)
   const levels = STANDARD_EFFORTS.filter((level) => object(effort[level]).supported === true)
-  const efforts = declared ?? (effort.supported === false ? [] : levels.length ? levels : undefined)
+  const efforts =
+    effort.supported === false ? [] : (declared ?? (levels.length ? levels : undefined))
   const thinking = object(object(capabilities.thinking).types)
   const messagesThinking =
     object(thinking.adaptive).supported === true
@@ -58,8 +64,8 @@ export const readModelReasoning = (
         ? 'budget'
         : undefined
   const canDisableThinking = object(thinking.disabled).supported === false ? false : undefined
-  return efforts || messagesThinking || canDisableThinking === false
-    ? { efforts, messagesThinking, canDisableThinking }
+  return efforts || canonicalId || messagesThinking || canDisableThinking === false
+    ? { efforts, canonicalId, messagesThinking, canDisableThinking }
     : undefined
 }
 
@@ -69,7 +75,8 @@ export const restoreModelReasoning = (entries: unknown): ModelReasoningMap => {
     const profile = object(value)
     const { messagesThinking } = profile
     profiles.set(model, {
-      efforts: effortList(profile.efforts),
+      efforts: readEffortList(profile.efforts),
+      canonicalId: modelId(profile.canonicalId),
       messagesThinking:
         messagesThinking === 'adaptive' || messagesThinking === 'budget'
           ? messagesThinking
@@ -174,7 +181,10 @@ const knownReasoning = (config: ChatConfig, id: string): ModelReasoning => {
     .replace(/-\d{4}-\d{2}-\d{2}$/, '')
     .replace(/^(claude-.+)-\d{8}$/, '$1')
   // DeepSeek documents actual levels, not the aliases that map to the same level.
-  if (!endpoint || /^deepseek-(?:flash|v4-(?:pro|flash(?:-vision-exp)?))$/.test(model)) {
+  if (
+    !endpoint ||
+    /^deepseek-(?:flash|v4-(?:pro|flash(?:-vision-exp)?)|v4\.1-flash-1017)$/.test(model)
+  ) {
     return { efforts: format === 'responses' ? ['none', ...DEEPSEEK] : DEEPSEEK }
   }
   if (format === 'messages') {
@@ -188,13 +198,21 @@ const knownReasoning = (config: ChatConfig, id: string): ModelReasoning => {
   }
 }
 
-export const modelReasoning = (config: ChatConfig, model: string, profiles: ModelReasoningMap) => {
-  const known = knownReasoning(config, model)
+export const modelReasoning = (
+  config: ChatConfig,
+  model: string,
+  profiles: ModelReasoningMap,
+  aliasEfforts?: readonly string[]
+) => {
   const declared = profiles.get(model)
+  const canonical = declared?.canonicalId ? knownReasoning(config, declared.canonicalId) : undefined
+  const known = knownReasoning(config, model)
   return {
-    efforts: declared?.efforts ?? known.efforts ?? [],
-    messagesThinking: declared?.messagesThinking ?? known.messagesThinking,
-    canDisableThinking: declared?.canDisableThinking ?? known.canDisableThinking,
+    efforts: declared?.efforts ?? aliasEfforts ?? canonical?.efforts ?? known.efforts ?? [],
+    messagesThinking:
+      declared?.messagesThinking ?? canonical?.messagesThinking ?? known.messagesThinking,
+    canDisableThinking:
+      declared?.canDisableThinking ?? canonical?.canDisableThinking ?? known.canDisableThinking,
   }
 }
 

@@ -520,6 +520,12 @@ public final class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public String reasoningAliasesUrl() {
+            String origin = BuildConfig.R2_UPDATE_ORIGIN;
+            return origin.isEmpty() ? "" : origin + "/updates/reasoning-aliases.json";
+        }
+
+        @JavascriptInterface
         public String updateStatus() { return updater.status(); }
 
         @JavascriptInterface

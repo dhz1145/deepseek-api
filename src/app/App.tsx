@@ -3,7 +3,7 @@ import { android } from './android.js'
 import { AndroidUpdatePrompt } from './AndroidUpdatePrompt.js'
 import { useAndroidBackInterception } from './useAndroidBackInterception.js'
 import { useTranslate } from '../i18n/index.js'
-import { useSettings } from '../services/settings.js'
+import { refreshReasoningAliases, useSettings } from '../services/settings.js'
 import {
   isAndroidTablet,
   useIsAndroidTablet,
@@ -142,6 +142,7 @@ export const App = () => {
   const isMobile = useIsMobile()
   const apiKey = useSettings((state) => state.apiKey)
   const model = useSettings((state) => state.chatModel)
+  const customApi = useSettings((state) => state.apiBaseUrl !== null)
   const needsApiSetup = Boolean(android && (!apiKey || !model))
   const tablet = useIsAndroidTablet()
   const drawerOpen = useMobileSider((state) => state.open)
@@ -163,6 +164,19 @@ export const App = () => {
 
   useAndroidBackInterception(overlayOpen)
   usePreventPageScroll(isMobile && !android)
+
+  useEffect(() => {
+    if (!customApi) {
+      return
+    }
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), 5_000)
+    void refreshReasoningAliases(controller.signal).finally(() => window.clearTimeout(timeout))
+    return () => {
+      window.clearTimeout(timeout)
+      controller.abort()
+    }
+  }, [customApi])
 
   useEffect(() => {
     document.documentElement.lang = locale

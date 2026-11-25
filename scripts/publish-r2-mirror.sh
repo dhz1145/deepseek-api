@@ -32,4 +32,5 @@ put() {
 put "$apk" application/vnd.android.package-archive 'public, max-age=31536000, immutable'
 curl --fail --silent --show-error --proto '=https' --max-time 45 --retry 2 "$origin/updates/$apk" |
   sha256sum --check <(printf '%s  -\n' "$digest")
+put reasoning-aliases.json application/json 'public, max-age=300, must-revalidate'
 put latest.json application/json 'public, max-age=60, must-revalidate'

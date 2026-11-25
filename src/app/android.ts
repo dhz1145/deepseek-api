@@ -5,6 +5,7 @@ type AndroidBridge = {
   buttonNavigationInset: () => number
   systemFontScale: () => number
   openAppPermissions: () => void
+  reasoningAliasesUrl?: () => string
   updateStatus: () => string
   checkForUpdate: () => void
   installUpdate: () => void
